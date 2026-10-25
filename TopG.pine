@@ -1,20 +1,28 @@
 //@version=6
-indicator("TopG v0.1 - MSM Foundation", overlay=true, max_lines_count=450, max_labels_count=450)
-// MSM.pdf v2 + implementation contract D-001. Chart-timeframe MSM only.
-// No CHOCH, ISS, TJL or Buy/Sell signals. TradingView verification pending.
-start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true)
-dir = input.string("Upward", "Starting direction", options=["Upward", "Downward"])
-view = input.string("History", "MSM view", options=["Off", "Latest", "History"])
-keep = input.int(150, "Confirmed point drawings retained", minval=2, maxval=400)
-limit = input.int(20000, "Candle safety limit", minval=100, maxval=30000)
-events = input.bool(true, "Show identification / confirmation candles")
-bool up = dir == "Upward"
+indicator("TopG v0.2 - MSM + CHOCH", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=200)
+// Sources: MSM.pdf v2, Choch.pdf v2, implementation contract D-001.
+// Chart-timeframe foundation; no ISS, TJL, MTF entries or Buy/Sell signals.
+// Authored/source-reviewed, TradingView compilation and replay verification pending.
+start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
+initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
+msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
+chochView = input.string("History", "CHOCH view", options=["Off", "Latest", "History"], group="Display")
+keepPoints = input.int(120, "MSM confirmed points retained", minval=2, maxval=160, group="Display")
+keepChoch = input.int(15, "CHOCH events retained (3 zones each)", minval=1, maxval=60, group="Display")
+showEvents = input.bool(true, "Show discovery / confirmation candle markers", group="Display")
+limit = input.int(20000, "Candle storage safety limit", minval=100, maxval=30000, group="Safety")
 var array<float> tops = array.new_float()
 var array<float> bots = array.new_float()
+var array<float> wicksH = array.new_float()
+var array<float> wicksL = array.new_float()
 var array<int> ts = array.new_int()
-var array<line> lines = array.new_line()
-var array<label> labels = array.new_label()
-var array<label> marks = array.new_label()
+var array<line> msmLines = array.new_line()
+var array<label> msmLabels = array.new_label()
+var array<label> msmEvents = array.new_label()
+var array<box> zoneBoxes = array.new_box()
+var array<line> zoneLines = array.new_line()
+var array<label> zoneLabels = array.new_label()
+var array<label> chochEvents = array.new_label()
 f_ext(array<float> a, int first, int last, bool highest) =>
     float best = na
     int chosen = na
@@ -25,31 +33,68 @@ f_ext(array<float> a, int first, int last, bool highest) =>
                 best := v
                 chosen := j
     [best, chosen]
-f_draw(int origin, float price, int known, bool highPoint, string labelText, color ink) =>
-    line l = line.new(origin, price, known, price, xloc=xloc.bar_time, extend=extend.right, color=ink)
-    label b = label.new(origin, price, labelText, xloc=xloc.bar_time, style=highPoint ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
-    label.set_tooltip(b, "Origin: " + str.format_time(origin, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nKnown at close: " + str.format_time(known, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nPrice: " + str.tostring(price, format.mintick))
-    [l, b]
+f_tip(int origin, int known, float price) =>
+    "Origin: " + str.format_time(origin, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nKnown at close: " + str.format_time(known, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nPrice: " + str.tostring(price, format.mintick)
+f_draw(int origin, float price, int known, bool highPoint, string caption, color ink) =>
+    line ln = line.new(origin, price, known, price, xloc=xloc.bar_time, extend=extend.right, color=ink)
+    label lb = label.new(origin, price, caption, xloc=xloc.bar_time, style=highPoint ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
+    label.set_tooltip(lb, f_tip(origin, known, price))
+    [ln, lb]
+f_clear_msm() =>
+    while array.size(msmLines) > 0
+        line.delete(array.shift(msmLines))
+        label.delete(array.shift(msmLabels))
+f_clear_zones() =>
+    while array.size(zoneLabels) > 0
+        box.delete(array.shift(zoneBoxes))
+        line.delete(array.shift(zoneLines))
+        label.delete(array.shift(zoneLabels))
+f_zone(int ix, bool highSide, string caption, color ink, int known) =>
+    int origin = array.get(ts, ix)
+    float upper = highSide ? array.get(wicksH, ix) : array.get(bots, ix)
+    float lower = highSide ? array.get(tops, ix) : array.get(wicksL, ix)
+    box zb = na
+    line zl = na
+    if upper > lower
+        zb := box.new(left=origin, top=upper, right=known, bottom=lower, xloc=xloc.bar_time, extend=extend.right, border_color=ink, bgcolor=color.new(ink, 88))
+    else
+        zl := line.new(origin, lower, known, lower, xloc=xloc.bar_time, extend=extend.right, color=ink, width=2)
+    label lb = label.new(origin, highSide ? upper : lower, caption, xloc=xloc.bar_time, style=highSide ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
+    label.set_tooltip(lb, f_tip(origin, known, highSide ? lower : upper) + "\nZone: " + str.tostring(lower, format.mintick) + " to " + str.tostring(upper, format.mintick) + "\nCHOCH analysis zone, NOT an entry signal")
+    array.push(zoneBoxes, zb)
+    array.push(zoneLines, zl)
+    array.push(zoneLabels, lb)
 var bool started = false
 var bool halted = false
+var bool up = initialDir == "Upward"
 var bool pending = false
 var int reference = na
-var int lastBreak = -1
+var int lastBoundary = -1
 var int identified = na
 var int ti = na
 var float tentative = na
+var int chi = na
+var int cli = na
 var float ch = na
 var float cl = na
-var int pairs = 0
+var int totalPairs = 0
+var int directionPairs = 0
 var int skipped = 0
-var int pruned = 0
+var int prunedPoints = 0
+var int prunedZones = 0
+var int prunedEvents = 0
+var int reversalRun = 0
+var int chochCount = 0
+var int lastChochClose = na
+var string lastChochSide = "None"
 var string trend = "Waiting for start"
 var string lastEvent = "None"
 var line tl = na
 var label tb = na
-var table panel = table.new(position.top_right, 2, 9, border_width=1)
-bool newPoint = false
-bool newPair = false
+var table panel = table.new(position.top_right, 2, 14, border_width=1, border_color=color.gray)
+bool pointNow = false
+bool pairNow = false
+bool chochNow = false
 if barstate.isconfirmed
     if not started and time == start
         started := true
@@ -59,103 +104,174 @@ if barstate.isconfirmed
     if started and not halted
         if array.size(ts) >= limit
             halted := true
-            lastEvent := "STOPPED: storage limit; choose later start"
+            lastEvent := "STOPPED: storage limit; select later start"
         else
             array.push(tops, math.max(open, close))
             array.push(bots, math.min(open, close))
+            array.push(wicksH, high)
+            array.push(wicksL, low)
             array.push(ts, time)
             int i = array.size(ts) - 1
-            if pending
-                bool broken = i > identified and (up ? close > tentative : close < tentative)
-                if broken
+            bool continued = pending and i > identified and (up ? close > tentative : close < tentative)
+            bool reversalClose = pending and not na(ch) and not na(cl) and (up ? close < cl : close > ch)
+            // Do not silently invent priority if both events would complete together.
+            bool collision = continued and reversalClose and reversalRun == 1
+            if collision
+                halted := true
+                lastEvent := "STOPPED: simultaneous continuation/CHOCH; rule review needed"
+            else
+                if continued
                     [opposite, oi] = f_ext(up ? bots : tops, ti, i, not up)
                     float nh = up ? tentative : opposite
                     float nl = up ? opposite : tentative
                     int hi = up ? ti : oi
                     int li = up ? oi : ti
-                    pairs += 1
-                    if pairs >= 2
+                    totalPairs += 1
+                    directionPairs += 1
+                    if directionPairs >= 2
                         bool agrees = up ? nh > ch and nl > cl : nh < ch and nl < cl
                         trend := agrees ? (up ? "Upward trend" : "Downward trend") : "Trend not confirmed"
                     ch := nh
                     cl := nl
-                    newPair := true
-                    lastEvent := "Pair " + str.tostring(pairs) + " confirmed"
+                    chi := hi
+                    cli := li
+                    pairNow := true
+                    lastEvent := "Pair " + str.tostring(totalPairs) + " confirmed"
                     if not na(tl)
                         line.delete(tl)
                         tl := na
                     if not na(tb)
                         label.delete(tb)
                         tb := na
-                    if view == "Latest"
-                        while array.size(lines) > 0
-                            line.delete(array.shift(lines))
-                            label.delete(array.shift(labels))
-                    if view != "Off"
-                        [hl, hb] = f_draw(array.get(ts, hi), nh, time_close, true, "CH " + str.tostring(pairs), color.red)
-                        [ll, lb] = f_draw(array.get(ts, li), nl, time_close, false, "CL " + str.tostring(pairs), color.teal)
-                        array.push(lines, hl)
-                        array.push(labels, hb)
-                        array.push(lines, ll)
-                        array.push(labels, lb)
-                        while array.size(lines) > keep
-                            line.delete(array.shift(lines))
-                            label.delete(array.shift(labels))
-                            pruned += 1
+                    if msmView == "Latest"
+                        f_clear_msm()
+                    if msmView != "Off"
+                        [hl, hb] = f_draw(array.get(ts, hi), nh, time_close, true, "CH " + str.tostring(totalPairs), color.red)
+                        [ll, lb] = f_draw(array.get(ts, li), nl, time_close, false, "CL " + str.tostring(totalPairs), color.teal)
+                        array.push(msmLines, hl)
+                        array.push(msmLabels, hb)
+                        array.push(msmLines, ll)
+                        array.push(msmLabels, lb)
+                        while array.size(msmLines) > keepPoints
+                            line.delete(array.shift(msmLines))
+                            label.delete(array.shift(msmLabels))
+                            prunedPoints += 1
                     reference := oi
-                    lastBreak := i
+                    lastBoundary := i
                     pending := false
                     tentative := na
                     ti := na
-            else if i >= 1 and i - 1 > lastBreak
-                bool pair = up ? close[1] < open[1] and close < open and close < low[1] : close[1] > open[1] and close > open and close > high[1]
-                if pair
-                    if i - 2 < reference
-                        skipped += 1
-                        lastEvent := "Empty-range pair skipped (D-001)"
-                    else
-                        [candidate, ci] = f_ext(up ? tops : bots, reference, i - 2, up)
-                        tentative := candidate
-                        ti := ci
-                        identified := i
-                        pending := true
-                        newPoint := true
-                        lastEvent := up ? "Tentative high identified" : "Tentative low identified"
-                        if view != "Off"
-                            [l, b] = f_draw(array.get(ts, ti), tentative, time_close, up, up ? "TH pending" : "TL pending", color.orange)
-                            line.set_style(l, line.style_dashed)
-                            tl := l
-                            tb := b
-if events and view != "Off" and (newPoint or newPair)
-    if view == "Latest"
-        while array.size(marks) > 0
-            label.delete(array.shift(marks))
-    label e = label.new(time, newPair ? high : low, newPair ? "PAIR CONFIRMED" : "POINT IDENTIFIED", xloc=xloc.bar_time, style=newPair ? label.style_label_down : label.style_label_up, color=newPair ? color.blue : color.orange, textcolor=color.white, size=size.tiny)
-    array.push(marks, e)
-    while array.size(marks) > 40
-        label.delete(array.shift(marks))
+                    reversalRun := 0
+                else
+                    if not pending and i >= 1 and i - 1 > lastBoundary
+                        bool validPair = up ? close[1] < open[1] and close < open and close < low[1] : close[1] > open[1] and close > open and close > high[1]
+                        if validPair
+                            if i - 2 < reference
+                                skipped += 1
+                                lastEvent := "Empty-range pair skipped (D-001)"
+                            else
+                                [candidate, ci] = f_ext(up ? tops : bots, reference, i - 2, up)
+                                tentative := candidate
+                                ti := ci
+                                identified := i
+                                pending := true
+                                reversalRun := 0
+                                pointNow := true
+                                lastEvent := up ? "Tentative high identified" : "Tentative low identified"
+                                if msmView != "Off"
+                                    [ln, lb] = f_draw(array.get(ts, ti), tentative, time_close, up, up ? "TH pending" : "TL pending", color.orange)
+                                    line.set_style(ln, line.style_dashed)
+                                    tl := ln
+                                    tb := lb
+                    // Identification candle may be first eligible close; earlier closes cannot count.
+                    bool qualifies = pending and not na(chi) and not na(cli) and i >= identified and (up ? close < cl : close > ch)
+                    reversalRun := qualifies ? reversalRun + 1 : 0
+                    if reversalRun == 2
+                        chochNow := true
+                        chochCount += 1
+                        lastChochClose := time_close
+                        lastChochSide := up ? "Bearish" : "Bullish"
+                        lastEvent := lastChochSide + " CHOCH " + str.tostring(chochCount)
+                        if chochView == "Latest"
+                            f_clear_zones()
+                            while array.size(chochEvents) > 0
+                                label.delete(array.shift(chochEvents))
+                        if chochView != "Off"
+                            string tag = " #" + str.tostring(chochCount)
+                            color ink = up ? color.maroon : color.green
+                            f_zone(cli, false, (up ? "SBR" : "QML / A+") + tag, ink, time_close)
+                            f_zone(chi, true, (up ? "QML / A+" : "RBS") + tag, ink, time_close)
+                            f_zone(ti, up, (up ? "Double top" : "Double bottom") + tag, ink, time_close)
+                            while array.size(zoneLabels) > keepChoch * 3
+                                box.delete(array.shift(zoneBoxes))
+                                line.delete(array.shift(zoneLines))
+                                label.delete(array.shift(zoneLabels))
+                                prunedZones += 1
+                        if not na(tl)
+                            line.delete(tl)
+                            tl := na
+                        if not na(tb)
+                            label.delete(tb)
+                            tb := na
+                        reference := ti
+                        lastBoundary := i
+                        up := not up
+                        directionPairs := 0
+                        trend := up ? "Marking upward structure" : "Marking downward structure"
+                        pending := false
+                        tentative := na
+                        ti := na
+                        identified := na
+                        reversalRun := 0
+                        // Confirmed points remain confirmed; no tentative promotion on CHOCH.
+if showEvents and msmView != "Off" and (pointNow or pairNow) and not chochNow
+    if msmView == "Latest"
+        while array.size(msmEvents) > 0
+            label.delete(array.shift(msmEvents))
+    label ev = label.new(time, pairNow ? high : low, pairNow ? "PAIR CONFIRMED" : "POINT IDENTIFIED", xloc=xloc.bar_time, style=pairNow ? label.style_label_down : label.style_label_up, color=pairNow ? color.blue : color.orange, textcolor=color.white, size=size.tiny)
+    array.push(msmEvents, ev)
+    while array.size(msmEvents) > 40
+        label.delete(array.shift(msmEvents))
+        prunedEvents += 1
+if showEvents and chochView != "Off" and chochNow
+    label ev = label.new(time, up ? low : high, lastChochSide + " CHOCH #" + str.tostring(chochCount), xloc=xloc.bar_time, style=up ? label.style_label_up : label.style_label_down, color=up ? color.green : color.maroon, textcolor=color.white, size=size.small)
+    label.set_tooltip(ev, "Confirmed at: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nTwo eligible consecutive closes. Analysis event, not Buy/Sell entry.")
+    array.push(chochEvents, ev)
+    while array.size(chochEvents) > keepChoch
+        label.delete(array.shift(chochEvents))
+        prunedEvents += 1
 if barstate.islast
-    string status = halted ? "HALTED: incomplete history" : started ? (pending ? "Waiting for continuation" : "Searching for pullback") : "Start not found: select a loaded candle OPEN"
-    table.cell(panel, 0, 0, "TopG v0.1", bgcolor=color.navy, text_color=color.white)
-    table.cell(panel, 1, 0, "MSM ONLY / UNVERIFIED", bgcolor=color.navy, text_color=color.white)
+    string state = halted ? "HALTED: see last event" : started ? (pending ? "Waiting: continuation or CHOCH" : "Searching for pullback") : "Start not found: select loaded candle OPEN"
+    string when = na(lastChochClose) ? "None" : str.format_time(lastChochClose, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    table.cell(panel, 0, 0, "TopG v0.2")
+    table.cell(panel, 1, 0, "MSM + CHOCH / UNVERIFIED")
     table.cell(panel, 0, 1, "State")
-    table.cell(panel, 1, 1, status)
-    table.cell(panel, 0, 2, "Direction / timeframe")
-    table.cell(panel, 1, 2, dir + " / " + timeframe.period)
+    table.cell(panel, 1, 1, state)
+    table.cell(panel, 0, 2, "Current direction / chart")
+    table.cell(panel, 1, 2, (up ? "Upward" : "Downward") + " / " + timeframe.period)
     table.cell(panel, 0, 3, "Structure")
     table.cell(panel, 1, 3, trend)
-    table.cell(panel, 0, 4, "Pairs / empty pairs skipped")
-    table.cell(panel, 1, 4, str.tostring(pairs) + " / " + str.tostring(skipped))
-    table.cell(panel, 0, 5, "High / low")
+    table.cell(panel, 0, 4, "Pairs: total / current direction")
+    table.cell(panel, 1, 4, str.tostring(totalPairs) + " / " + str.tostring(directionPairs))
+    table.cell(panel, 0, 5, "Latest confirmed high / low")
     table.cell(panel, 1, 5, str.tostring(ch, format.mintick) + " / " + str.tostring(cl, format.mintick))
-    table.cell(panel, 0, 6, "Tentative")
-    table.cell(panel, 1, 6, str.tostring(tentative, format.mintick))
-    table.cell(panel, 0, 7, "Candles / pruned drawings")
-    table.cell(panel, 1, 7, str.tostring(array.size(ts)) + " / " + str.tostring(pruned))
-    table.cell(panel, 0, 8, "Last event")
-    table.cell(panel, 1, 8, lastEvent)
-    // Explicit opaque colors for every dashboard cell, including the header.
-    for row = 0 to 8
+    table.cell(panel, 0, 6, "Active tentative / CHOCH closes")
+    table.cell(panel, 1, 6, str.tostring(tentative, format.mintick) + " / " + str.tostring(reversalRun))
+    table.cell(panel, 0, 7, "CHOCH count / last side")
+    table.cell(panel, 1, 7, str.tostring(chochCount) + " / " + lastChochSide)
+    table.cell(panel, 0, 8, "Last CHOCH close (exchange time)")
+    table.cell(panel, 1, 8, when)
+    table.cell(panel, 0, 9, "Candles / empty pairs skipped")
+    table.cell(panel, 1, 9, str.tostring(array.size(ts)) + " / " + str.tostring(skipped))
+    table.cell(panel, 0, 10, "Omitted history: points / zones / events")
+    table.cell(panel, 1, 10, str.tostring(prunedPoints) + " / " + str.tostring(prunedZones) + " / " + str.tostring(prunedEvents))
+    table.cell(panel, 0, 11, "Last event")
+    table.cell(panel, 1, 11, lastEvent)
+    table.cell(panel, 0, 12, "History marker retention")
+    table.cell(panel, 1, 12, "MSM latest 40; CHOCH per setting")
+    table.cell(panel, 0, 13, "Scope")
+    table.cell(panel, 1, 13, "No ISS / TJL / entries yet")
+    for row = 0 to 13
         for col = 0 to 1
             table.cell_set_bgcolor(panel, col, row, color.white)
             table.cell_set_text_color(panel, col, row, color.black)
