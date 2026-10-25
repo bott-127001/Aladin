@@ -154,3 +154,8 @@ if barstate.islast
     table.cell(panel, 1, 7, str.tostring(array.size(ts)) + " / " + str.tostring(pruned))
     table.cell(panel, 0, 8, "Last event")
     table.cell(panel, 1, 8, lastEvent)
+    // Explicit opaque colors for every dashboard cell, including the header.
+    for row = 0 to 8
+        for col = 0 to 1
+            table.cell_set_bgcolor(panel, col, row, color.white)
+            table.cell_set_text_color(panel, col, row, color.black)
