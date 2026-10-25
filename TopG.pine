@@ -25,9 +25,9 @@ f_ext(array<float> a, int first, int last, bool highest) =>
                 best := v
                 chosen := j
     [best, chosen]
-f_draw(int origin, float price, int known, bool highPoint, string text, color ink) =>
+f_draw(int origin, float price, int known, bool highPoint, string labelText, color ink) =>
     line l = line.new(origin, price, known, price, xloc=xloc.bar_time, extend=extend.right, color=ink)
-    label b = label.new(origin, price, text, xloc=xloc.bar_time, style=highPoint ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
+    label b = label.new(origin, price, labelText, xloc=xloc.bar_time, style=highPoint ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
     label.set_tooltip(b, "Origin: " + str.format_time(origin, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nKnown at close: " + str.format_time(known, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nPrice: " + str.tostring(price, format.mintick))
     [l, b]
 var bool started = false
