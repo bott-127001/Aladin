@@ -1,9 +1,10 @@
 //@version=6
-indicator("TopG v0.4 - MSM CHOCH ISS TJL", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.1 - Explicit Structure Inputs", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// v0.4 appends TJL marking; existing detection remains unchanged.
-// D-005, approved 26 Oct 2026: draw at pair confirmation; set ready at next point 3.
-// Chart-timeframe only. No tap activation, usage or trade entries. Unverified in TradingView.
+// v0.4.1: shared Structure.step receives its candle and histories explicitly.
+// Outer CHOCH/ISS lifecycle and rendering are still chart-context code; no MTF requests yet.
+// D-005: draw TJL at pair confirmation; replacement set ready at next point 3.
+// No tap activation, usage or trade entries. Compilation/regression verification pending.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -37,7 +38,9 @@ f_ext(array<float> a, int first, int last, bool highest) =>
                 best := v
                 chosen := j
     [best, chosen]
-// Shared exact MSM engine: 0=no event, 1=tentative, 2=confirmed pair, 3=empty-range skip.
+// Shared MSM calculation. This method does not read chart OHLC, time, global
+// histories, barstate or drawings. Its caller must supply an eligible closed candle.
+// Events: 0=none, 1=tentative, 2=confirmed pair, 3=empty-range skip.
 type Structure
     bool up = true
     int ref = 0
@@ -52,11 +55,11 @@ type Structure
     int hi = na
     int li = na
     int pairs = 0
-method step(Structure s, int i) =>
+method step(Structure s, int i, array<float> bodyHighs, array<float> bodyLows, float candleOpen, float candleClose, float previousOpen, float previousClose, float previousHigh, float previousLow, int candleCloseTime) =>
     int eventCode = 0
     if s.pending
-        if i > s.identified and (s.up ? close > s.tentative : close < s.tentative)
-            [opposite, oi] = f_ext(s.up ? bots : tops, s.ti, i, not s.up)
+        if i > s.identified and (s.up ? candleClose > s.tentative : candleClose < s.tentative)
+            [opposite, oi] = f_ext(s.up ? bodyLows : bodyHighs, s.ti, i, not s.up)
             s.ch := s.up ? s.tentative : opposite
             s.cl := s.up ? opposite : s.tentative
             s.hi := s.up ? s.ti : oi
@@ -69,16 +72,16 @@ method step(Structure s, int i) =>
             s.ti := na
             eventCode := 2
     else if i >= 1 and i - 1 > s.gate
-        bool valid = s.up ? close[1] < open[1] and close < open and close < low[1] : close[1] > open[1] and close > open and close > high[1]
+        bool valid = s.up ? previousClose < previousOpen and candleClose < candleOpen and candleClose < previousLow : previousClose > previousOpen and candleClose > candleOpen and candleClose > previousHigh
         if valid
             if i - 2 < s.ref
                 eventCode := 3
             else
-                [v, vi] = f_ext(s.up ? tops : bots, s.ref, i - 2, s.up)
+                [v, vi] = f_ext(s.up ? bodyHighs : bodyLows, s.ref, i - 2, s.up)
                 s.tentative := v
                 s.ti := vi
                 s.identified := i
-                s.known := time_close
+                s.known := candleCloseTime
                 s.pending := true
                 eventCode := 1
     eventCode
@@ -211,7 +214,7 @@ if barstate.isconfirmed
             else
                 float oldHigh = main.ch
                 float oldLow = main.cl
-                int ev = main.step(i)
+                int ev = main.step(i, tops, bots, open, close, open[1], close[1], high[1], low[1], time_close)
                 bool changed = false
                 if ev == 3
                     skipped += 1
@@ -322,7 +325,7 @@ if barstate.isconfirmed
                         eligible := false
                         istate := "No confirmed main level 2 yet"
                 if irunning and i > born
-                    int iev = inside.step(i)
+                    int iev = inside.step(i, tops, bots, open, close, open[1], close[1], high[1], low[1], time_close)
                     bool badPoint = iev == 1 ? not f_in(inside.tentative, lowerBound, upperBound) : iev == 2 ? not f_in(inside.ch, lowerBound, upperBound) or not f_in(inside.cl, lowerBound, upperBound) : false
                     if badPoint
                         irunning := false
@@ -398,7 +401,7 @@ if barstate.isconfirmed
                     istate := "ISS scope: switch to H1 / M5 / M1"
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.3", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.1", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(issCount) + " / " + issSide, f_time(issClose), str.tostring(rejected) + " / " + str.tostring(outsideCompletion) + " / " + str.tostring(cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no TJL / entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -522,9 +525,9 @@ if barstate.islast
     table.cell(tjPanel, 1, 5, "Structural only / current / archived", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.1", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "Chart timeframe; TJL marking only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "Explicit MSM inputs; outer lifecycle chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjState
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
