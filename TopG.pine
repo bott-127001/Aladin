@@ -1,8 +1,8 @@
 //@version=6
-indicator("TopG v0.2 - MSM + CHOCH", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=200)
+indicator("TopG v0.2.1 - MSM + CHOCH Audit", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=200)
 // Sources: MSM.pdf v2, Choch.pdf v2, implementation contract D-001.
 // Chart-timeframe foundation; no ISS, TJL, MTF entries or Buy/Sell signals.
-// Authored/source-reviewed, TradingView compilation and replay verification pending.
+// v0.2.1 adds diagnostic snapshots only. TradingView verification pending.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -10,6 +10,7 @@ chochView = input.string("History", "CHOCH view", options=["Off", "Latest", "His
 keepPoints = input.int(120, "MSM confirmed points retained", minval=2, maxval=160, group="Display")
 keepChoch = input.int(15, "CHOCH events retained (3 zones each)", minval=1, maxval=60, group="Display")
 showEvents = input.bool(true, "Show discovery / confirmation candle markers", group="Display")
+showAudit = input.bool(false, "Show latest CHOCH audit panel", group="Display")
 limit = input.int(20000, "Candle storage safety limit", minval=100, maxval=30000, group="Safety")
 var array<float> tops = array.new_float()
 var array<float> bots = array.new_float()
@@ -33,6 +34,8 @@ f_ext(array<float> a, int first, int last, bool highest) =>
                 best := v
                 chosen := j
     [best, chosen]
+f_time(int stamp) =>
+    na(stamp) ? "None" : str.format_time(stamp, "yyyy-MM-dd HH:mm", syminfo.timezone)
 f_tip(int origin, int known, float price) =>
     "Origin: " + str.format_time(origin, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nKnown at close: " + str.format_time(known, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nPrice: " + str.tostring(price, format.mintick)
 f_draw(int origin, float price, int known, bool highPoint, string caption, color ink) =>
@@ -71,6 +74,7 @@ var bool pending = false
 var int reference = na
 var int lastBoundary = -1
 var int identified = na
+var int identifiedClose = na
 var int ti = na
 var float tentative = na
 var int chi = na
@@ -87,11 +91,13 @@ var int reversalRun = 0
 var int chochCount = 0
 var int lastChochClose = na
 var string lastChochSide = "None"
+var string lastAudit = "No confirmed CHOCH in calculated history."
 var string trend = "Waiting for start"
 var string lastEvent = "None"
 var line tl = na
 var label tb = na
 var table panel = table.new(position.top_right, 2, 14, border_width=1, border_color=color.gray)
+var table auditPanel = table.new(position.bottom_right, 1, 1, border_width=1, border_color=color.gray)
 bool pointNow = false
 bool pairNow = false
 bool chochNow = false
@@ -174,6 +180,7 @@ if barstate.isconfirmed
                                 tentative := candidate
                                 ti := ci
                                 identified := i
+                                identifiedClose := time_close
                                 pending := true
                                 reversalRun := 0
                                 pointNow := true
@@ -192,6 +199,20 @@ if barstate.isconfirmed
                         lastChochClose := time_close
                         lastChochSide := up ? "Bearish" : "Bullish"
                         lastEvent := lastChochSide + " CHOCH " + str.tostring(chochCount)
+                        // Freeze evidence before direction/reference/tentative state changes.
+                        float brokenLevel = up ? cl : ch
+                        string relation = up ? "strictly below" : "strictly above"
+                        lastAudit := lastChochSide + " CHOCH #" + str.tostring(chochCount) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nAll times: " + syminfo.timezone
+                        lastAudit += "\nBroken " + (up ? "support: " : "resistance: ") + str.tostring(brokenLevel, format.mintick)
+                        lastAudit += "\nClose 1: " + f_time(time_close[1]) + " | " + str.tostring(close[1], format.mintick)
+                        lastAudit += "\nClose 2: " + f_time(time_close) + " | " + str.tostring(close, format.mintick)
+                        lastAudit += "\nRequired: both " + relation + " broken level; adjacent chart candles"
+                        lastAudit += "\nPoint 3 origin: " + f_time(array.get(ts, ti)) + " | " + str.tostring(tentative, format.mintick)
+                        lastAudit += "\nPoint 3 identified at close: " + f_time(identifiedClose)
+                        lastAudit += "\nPoint 3 eligible by close 1: " + (identifiedClose <= time_close[1] ? "YES" : "NO")
+                        lastAudit += "\nRestart reference OPEN: " + f_time(array.get(ts, ti))
+                        lastAudit += "\nNew pullback: BOTH candles must follow confirmation candle"
+                        lastAudit += "\nAnalysis event only; not a Buy/Sell entry. Diagnostic evidence, not independent validation."
                         if chochView == "Latest"
                             f_clear_zones()
                             while array.size(chochEvents) > 0
@@ -235,7 +256,7 @@ if showEvents and msmView != "Off" and (pointNow or pairNow) and not chochNow
         prunedEvents += 1
 if showEvents and chochView != "Off" and chochNow
     label ev = label.new(time, up ? low : high, lastChochSide + " CHOCH #" + str.tostring(chochCount), xloc=xloc.bar_time, style=up ? label.style_label_up : label.style_label_down, color=up ? color.green : color.maroon, textcolor=color.white, size=size.small)
-    label.set_tooltip(ev, "Confirmed at: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nTwo eligible consecutive closes. Analysis event, not Buy/Sell entry.")
+    label.set_tooltip(ev, lastAudit)
     array.push(chochEvents, ev)
     while array.size(chochEvents) > keepChoch
         label.delete(array.shift(chochEvents))
@@ -243,7 +264,7 @@ if showEvents and chochView != "Off" and chochNow
 if barstate.islast
     string state = halted ? "HALTED: see last event" : started ? (pending ? "Waiting: continuation or CHOCH" : "Searching for pullback") : "Start not found: select loaded candle OPEN"
     string when = na(lastChochClose) ? "None" : str.format_time(lastChochClose, "yyyy-MM-dd HH:mm", syminfo.timezone)
-    table.cell(panel, 0, 0, "TopG v0.2")
+    table.cell(panel, 0, 0, "TopG v0.2.1")
     table.cell(panel, 1, 0, "MSM + CHOCH / UNVERIFIED")
     table.cell(panel, 0, 1, "State")
     table.cell(panel, 1, 1, state)
@@ -275,3 +296,7 @@ if barstate.islast
         for col = 0 to 1
             table.cell_set_bgcolor(panel, col, row, color.white)
             table.cell_set_text_color(panel, col, row, color.black)
+    if showAudit
+        table.cell(auditPanel, 0, 0, lastAudit, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
+    else
+        table.clear(auditPanel, 0, 0, 0, 0)
