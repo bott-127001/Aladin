@@ -1,0 +1,156 @@
+//@version=6
+indicator("TopG v0.1 - MSM Foundation", overlay=true, max_lines_count=450, max_labels_count=450)
+// MSM.pdf v2 + implementation contract D-001. Chart-timeframe MSM only.
+// No CHOCH, ISS, TJL or Buy/Sell signals. TradingView verification pending.
+start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true)
+dir = input.string("Upward", "Starting direction", options=["Upward", "Downward"])
+view = input.string("History", "MSM view", options=["Off", "Latest", "History"])
+keep = input.int(150, "Confirmed point drawings retained", minval=2, maxval=400)
+limit = input.int(20000, "Candle safety limit", minval=100, maxval=30000)
+events = input.bool(true, "Show identification / confirmation candles")
+bool up = dir == "Upward"
+var array<float> tops = array.new_float()
+var array<float> bots = array.new_float()
+var array<int> ts = array.new_int()
+var array<line> lines = array.new_line()
+var array<label> labels = array.new_label()
+var array<label> marks = array.new_label()
+f_ext(array<float> a, int first, int last, bool highest) =>
+    float best = na
+    int chosen = na
+    if first >= 0 and last >= first and last < array.size(a)
+        for j = first to last
+            float v = array.get(a, j)
+            if na(best) or (highest ? v >= best : v <= best)
+                best := v
+                chosen := j
+    [best, chosen]
+f_draw(int origin, float price, int known, bool highPoint, string text, color ink) =>
+    line l = line.new(origin, price, known, price, xloc=xloc.bar_time, extend=extend.right, color=ink)
+    label b = label.new(origin, price, text, xloc=xloc.bar_time, style=highPoint ? label.style_label_down : label.style_label_up, color=ink, textcolor=color.white, size=size.tiny)
+    label.set_tooltip(b, "Origin: " + str.format_time(origin, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nKnown at close: " + str.format_time(known, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nPrice: " + str.tostring(price, format.mintick))
+    [l, b]
+var bool started = false
+var bool halted = false
+var bool pending = false
+var int reference = na
+var int lastBreak = -1
+var int identified = na
+var int ti = na
+var float tentative = na
+var float ch = na
+var float cl = na
+var int pairs = 0
+var int skipped = 0
+var int pruned = 0
+var string trend = "Waiting for start"
+var string lastEvent = "None"
+var line tl = na
+var label tb = na
+var table panel = table.new(position.top_right, 2, 9, border_width=1)
+bool newPoint = false
+bool newPair = false
+if barstate.isconfirmed
+    if not started and time == start
+        started := true
+        reference := 0
+        trend := up ? "Marking upward structure" : "Marking downward structure"
+        lastEvent := "Starting candle accepted"
+    if started and not halted
+        if array.size(ts) >= limit
+            halted := true
+            lastEvent := "STOPPED: storage limit; choose later start"
+        else
+            array.push(tops, math.max(open, close))
+            array.push(bots, math.min(open, close))
+            array.push(ts, time)
+            int i = array.size(ts) - 1
+            if pending
+                bool broken = i > identified and (up ? close > tentative : close < tentative)
+                if broken
+                    [opposite, oi] = f_ext(up ? bots : tops, ti, i, not up)
+                    float nh = up ? tentative : opposite
+                    float nl = up ? opposite : tentative
+                    int hi = up ? ti : oi
+                    int li = up ? oi : ti
+                    pairs += 1
+                    if pairs >= 2
+                        bool agrees = up ? nh > ch and nl > cl : nh < ch and nl < cl
+                        trend := agrees ? (up ? "Upward trend" : "Downward trend") : "Trend not confirmed"
+                    ch := nh
+                    cl := nl
+                    newPair := true
+                    lastEvent := "Pair " + str.tostring(pairs) + " confirmed"
+                    if not na(tl)
+                        line.delete(tl)
+                        tl := na
+                    if not na(tb)
+                        label.delete(tb)
+                        tb := na
+                    if view == "Latest"
+                        while array.size(lines) > 0
+                            line.delete(array.shift(lines))
+                            label.delete(array.shift(labels))
+                    if view != "Off"
+                        [hl, hb] = f_draw(array.get(ts, hi), nh, time_close, true, "CH " + str.tostring(pairs), color.red)
+                        [ll, lb] = f_draw(array.get(ts, li), nl, time_close, false, "CL " + str.tostring(pairs), color.teal)
+                        array.push(lines, hl)
+                        array.push(labels, hb)
+                        array.push(lines, ll)
+                        array.push(labels, lb)
+                        while array.size(lines) > keep
+                            line.delete(array.shift(lines))
+                            label.delete(array.shift(labels))
+                            pruned += 1
+                    reference := oi
+                    lastBreak := i
+                    pending := false
+                    tentative := na
+                    ti := na
+            else if i >= 1 and i - 1 > lastBreak
+                bool pair = up ? close[1] < open[1] and close < open and close < low[1] : close[1] > open[1] and close > open and close > high[1]
+                if pair
+                    if i - 2 < reference
+                        skipped += 1
+                        lastEvent := "Empty-range pair skipped (D-001)"
+                    else
+                        [candidate, ci] = f_ext(up ? tops : bots, reference, i - 2, up)
+                        tentative := candidate
+                        ti := ci
+                        identified := i
+                        pending := true
+                        newPoint := true
+                        lastEvent := up ? "Tentative high identified" : "Tentative low identified"
+                        if view != "Off"
+                            [l, b] = f_draw(array.get(ts, ti), tentative, time_close, up, up ? "TH pending" : "TL pending", color.orange)
+                            line.set_style(l, line.style_dashed)
+                            tl := l
+                            tb := b
+if events and view != "Off" and (newPoint or newPair)
+    if view == "Latest"
+        while array.size(marks) > 0
+            label.delete(array.shift(marks))
+    label e = label.new(time, newPair ? high : low, newPair ? "PAIR CONFIRMED" : "POINT IDENTIFIED", xloc=xloc.bar_time, style=newPair ? label.style_label_down : label.style_label_up, color=newPair ? color.blue : color.orange, textcolor=color.white, size=size.tiny)
+    array.push(marks, e)
+    while array.size(marks) > 40
+        label.delete(array.shift(marks))
+if barstate.islast
+    string status = halted ? "HALTED: incomplete history" : started ? (pending ? "Waiting for continuation" : "Searching for pullback") : "Start not found: select a loaded candle OPEN"
+    table.cell(panel, 0, 0, "TopG v0.1", bgcolor=color.navy, text_color=color.white)
+    table.cell(panel, 1, 0, "MSM ONLY / UNVERIFIED", bgcolor=color.navy, text_color=color.white)
+    table.cell(panel, 0, 1, "State")
+    table.cell(panel, 1, 1, status)
+    table.cell(panel, 0, 2, "Direction / timeframe")
+    table.cell(panel, 1, 2, dir + " / " + timeframe.period)
+    table.cell(panel, 0, 3, "Structure")
+    table.cell(panel, 1, 3, trend)
+    table.cell(panel, 0, 4, "Pairs / empty pairs skipped")
+    table.cell(panel, 1, 4, str.tostring(pairs) + " / " + str.tostring(skipped))
+    table.cell(panel, 0, 5, "High / low")
+    table.cell(panel, 1, 5, str.tostring(ch, format.mintick) + " / " + str.tostring(cl, format.mintick))
+    table.cell(panel, 0, 6, "Tentative")
+    table.cell(panel, 1, 6, str.tostring(tentative, format.mintick))
+    table.cell(panel, 0, 7, "Candles / pruned drawings")
+    table.cell(panel, 1, 7, str.tostring(array.size(ts)) + " / " + str.tostring(pruned))
+    table.cell(panel, 0, 8, "Last event")
+    table.cell(panel, 1, 8, lastEvent)
