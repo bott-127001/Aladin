@@ -1,10 +1,11 @@
 //@version=6
-indicator("TopG v0.4.1 - Explicit Structure Inputs", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.2 - Newest Confirmed TJL Pair", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// v0.4.1: shared Structure.step receives its candle and histories explicitly.
-// Outer CHOCH/ISS lifecycle and rendering are still chart-context code; no MTF requests yet.
-// D-005: draw TJL at pair confirmation; replacement set ready at next point 3.
-// No tap activation, usage or trade entries. Compilation/regression verification pending.
+// Shared Structure.step receives candle and histories explicitly.
+// D-006, approved 27 Oct 2026: newest confirmed pair immediately becomes current TJL.
+// D-006 supersedes D-005's wait for the next tentative point 3.
+// Manual-start dependence remains unresolved; this update changes TJL timing only.
+// Chart-timeframe only. No taps, usage or entries. TradingView verification pending.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -401,8 +402,8 @@ if barstate.isconfirmed
                     istate := "ISS scope: switch to H1 / M5 / M1"
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.1", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
-    array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(issCount) + " / " + issSide, f_time(issClose), str.tostring(rejected) + " / " + str.tostring(outsideCompletion) + " / " + str.tostring(cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no TJL / entries")
+    array<string> keys = array.from("TopG v0.4.2", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(issCount) + " / " + issSide, f_time(issClose), str.tostring(rejected) + " / " + str.tostring(outsideCompletion) + " / " + str.tostring(cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
         table.cell(panel, 1, row, array.get(vals, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -411,7 +412,7 @@ if barstate.islast
     else
         table.clear(audit, 0, 0, 0, 0)
 
-// TJL module is downstream of main detection; view switches never change its state.
+// TJL is downstream of main detection; display settings never change state.
 tjlView = input.string("History", "TJL view", options=["Off", "Latest", "History"], group="TJL")
 keepTJL = input.int(15, "TJL structural pairs retained", minval=2, maxval=20, group="TJL")
 showTJLAudit = input.bool(false, "Show TJL audit (takes audit panel priority)", group="TJL")
@@ -426,7 +427,7 @@ type TJLRecord
     int p3 = na
     float p3price = na
     int ended = na
-    string state = "Structural only - waiting for point 3"
+    string state = "Current set - newest confirmed pair"
 var array<TJLRecord> tjlRecords = array.new<TJLRecord>()
 var TJLRecord newestTJL = na
 var TJLRecord currentTJL = na
@@ -440,10 +441,10 @@ var array<label> tjz = array.new_label()
 var table tjPanel = table.new(position.bottom_left, 2, 7, border_width=1, border_color=color.gray)
 f_tjl_detail(TJLRecord r) =>
     string detail = "TJL pair #" + str.tostring(r.serial) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nTimes: " + syminfo.timezone + "\nDirection: " + (r.up ? "Bullish" : "Bearish") + "\nStatus: " + r.state
-    detail += "\nStructurally marked at close: " + f_time(r.made) + "\nTrade-finding set available at close: " + f_time(r.ready)
-    detail += "\nPoint 3 origin: " + f_time(r.p3) + " | " + f_price(r.p3price) + "\nSet ended at close: " + f_time(r.ended)
+    detail += "\nStructurally marked at close: " + f_time(r.made) + "\nCurrent set available at close: " + f_time(r.ready)
+    detail += "\nSubsequent point 3 origin (optional): " + f_time(r.p3) + " | " + f_price(r.p3price) + "\nSet ended at close: " + f_time(r.ended)
     detail += "\nTJL1 source OPEN: " + f_time(array.get(ts, r.up ? r.hi : r.li)) + "\nTJL2 source OPEN: " + f_time(array.get(ts, r.up ? r.li : r.hi))
-    detail += "\nD-005: drawing is available before replacement set becomes ready.\nNo tap/usage/entry engine yet. Set-ready is timing status, not a trade signal."
+    detail += "\nD-006: newest confirmed pair becomes current immediately; no wait for point 3.\nNo tap/usage/entry engine yet. Current-set status is not a trade signal.\nStart-independent structure selection remains unresolved."
     detail
 f_tjl_draw(TJLRecord r, bool first) =>
     bool highSide = first ? r.up : not r.up
@@ -453,8 +454,8 @@ f_tjl_draw(TJLRecord r, bool first) =>
     float lower = highSide ? array.get(tops, ix) : array.get(wl, ix)
     bool live = na(r.ended)
     int rightEdge = live ? time_close : r.ended
-    color ink = not live ? color.gray : na(r.ready) ? color.orange : r.up ? color.green : color.maroon
-    string caption = (first ? "TJL1" : "TJL2 / A+") + " #" + str.tostring(r.serial) + " | " + (not live ? "historical" : na(r.ready) ? "structural only" : "current set")
+    color ink = not live ? color.gray : r.up ? color.green : color.maroon
+    string caption = (first ? "TJL1" : "TJL2 / A+") + " #" + str.tostring(r.serial) + " | " + (live ? "current set" : "historical")
     box bx = na
     line ln = na
     if upper > lower
@@ -477,29 +478,28 @@ if barstate.isconfirmed and started and not halted and tjlScope
                     r.state := "Invalidated by source CHOCH"
         currentTJL := na
         newestTJL := na
+    // D-006: replace only at confirmed-pair close, never at the later point-3 event.
     if totalPairs > seenPairs
-        newestTJL := TJLRecord.new(serial=totalPairs, up=main.up, hi=main.hi, li=main.li, made=time_close)
+        if not na(currentTJL)
+            currentTJL.ended := time_close
+            currentTJL.state := "Replaced by newer confirmed pair"
+        newestTJL := TJLRecord.new(serial=totalPairs, up=main.up, hi=main.hi, li=main.li, made=time_close, ready=time_close)
+        currentTJL := newestTJL
+        readySets += 1
         array.push(tjlRecords, newestTJL)
         while array.size(tjlRecords) > keepTJL
             TJLRecord dropped = array.shift(tjlRecords)
             omittedTJL += 1
     int currentIndex = array.size(ts) - 1
     bool newPoint3 = main.pending and main.identified == currentIndex and main.known == time_close
+    // Optional audit metadata only. This cannot promote, replace or reactivate a set.
     if newPoint3 and not na(newestTJL)
-        if newestTJL.up == main.up and newestTJL.serial == totalPairs and na(newestTJL.ended) and na(newestTJL.ready)
-            if not na(currentTJL)
-                currentTJL.ended := time_close
-                currentTJL.state := "Replaced by next three-point set"
-            newestTJL.ready := time_close
+        if newestTJL.up == main.up and newestTJL.serial == totalPairs and na(newestTJL.ended) and na(newestTJL.p3)
             newestTJL.p3 := array.get(ts, main.ti)
             newestTJL.p3price := main.tentative
-            newestTJL.state := "Current trade-finding set (timing only)"
-            currentTJL := newestTJL
-            readySets += 1
     seenPairs := totalPairs
     seenChoch := chochCount
-// Monday alone intentionally does nothing. A continuation does not replace currentTJL
-// until the next valid point 3 creates a replacement three-point set (D-005).
+// Monday alone does nothing. Used-level tracking is not implemented in this release.
 if barstate.islast
     int deleted = f_ztrim(tjb, tjl, tjz, 0)
     if tjlScope and tjlView != "Off" and array.size(tjlRecords) > 0
@@ -509,25 +509,25 @@ if barstate.islast
             if visibleRecord
                 f_tjl_draw(r, true)
                 f_tjl_draw(r, false)
-    string tjState = not tjlScope ? "TJL: use D1 / H4 / H1" : halted ? "HALTED: TJL history incomplete" : not started ? "Waiting for selected start" : na(currentTJL) ? "No current three-point set" : "Current set #" + str.tostring(currentTJL.serial)
+    string tjState = not tjlScope ? "TJL: use D1 / H4 / H1" : halted ? "HALTED: TJL history incomplete" : not started ? "Waiting for selected start" : na(currentTJL) ? "No current confirmed-pair set" : "Current set #" + str.tostring(currentTJL.serial)
     string structural = na(newestTJL) ? "None" : "Pair #" + str.tostring(newestTJL.serial) + " / " + newestTJL.state
     table.cell(tjPanel, 0, 0, "TJL - chart timeframe", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 0, tjState, bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(tjPanel, 0, 1, "Latest structural pair", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(tjPanel, 0, 1, "Latest confirmed pair", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 1, structural, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 2, "Current set available", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 2, na(currentTJL) ? "None" : f_time(currentTJL.ready), bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(tjPanel, 0, 3, "Set readiness / source trend", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(tjPanel, 0, 3, "Sets created / source trend", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 3, str.tostring(readySets) + " sets / " + trend, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 4, "Historical pairs omitted", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 4, str.tostring(omittedTJL), bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(tjPanel, 0, 5, "Orange / colored / gray", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(tjPanel, 1, 5, "Structural only / current / archived", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(tjPanel, 0, 5, "Green / maroon / gray", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(tjPanel, 1, 5, "Bullish current / bearish current / historical", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4.1", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.2", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "Explicit MSM inputs; outer lifecycle chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "Newest confirmed TJL pair; start dependence unresolved", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjState
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
