@@ -1,11 +1,11 @@
 //@version=6
-indicator("TopG v0.4.2 - Newest Confirmed TJL Pair", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.3-dev - CHOCH Calculation Boundary", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// Shared Structure.step receives candle and histories explicitly.
-// D-006, approved 27 Oct 2026: newest confirmed pair immediately becomes current TJL.
-// D-006 supersedes D-005's wait for the next tentative point 3.
-// Manual-start dependence remains unresolved; this update changes TJL timing only.
-// Chart-timeframe only. No taps, usage or entries. TradingView verification pending.
+// MTF checkpoint 1: explicit-input CHOCH counting and structure restart.
+// Chart-only; ISS, storage and lifecycle orchestration still require extraction.
+// D-006: newest confirmed pair immediately becomes current TJL.
+// Manual-start dependence remains unresolved. No taps, usage or entries.
+// TradingView compilation and regression verification pending.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -86,6 +86,38 @@ method step(Structure s, int i, array<float> bodyHighs, array<float> bodyLows, f
                 s.pending := true
                 eventCode := 1
     eventCode
+// Calculation-only CHOCH state. Call once per eligible completed source candle,
+// after Structure.step and before restarting the structure or drawing its event.
+type ChochState
+    int run = 0
+    int count = 0
+    int confirmedAt = na
+    bool bullish = false
+method evaluate(ChochState c, Structure s, int i, int structureEvent, float candleClose, int candleCloseTime) =>
+    bool confirmed = false
+    if structureEvent == 1 or structureEvent == 2
+        c.run := 0
+    if structureEvent != 2
+        bool qualifies = s.pending and not na(s.hi) and not na(s.li) and i >= s.identified and (s.up ? candleClose < s.cl : candleClose > s.ch)
+        c.run := qualifies ? c.run + 1 : 0
+        if c.run == 2
+            c.count += 1
+            c.confirmedAt := candleCloseTime
+            c.bullish := not s.up
+            c.run := 0
+            confirmed := true
+    confirmed
+// Deliberately separate from evaluate: presentation reads the old direction and
+// original point 3 first. No price/time/global access or drawing calls here.
+method restartAfterChoch(Structure s, int confirmationIndex) =>
+    s.ref := s.ti
+    s.gate := confirmationIndex
+    s.up := not s.up
+    s.pairs := 0
+    s.pending := false
+    s.tentative := na
+    s.ti := na
+    true
 var array<line> ml = array.new_line()
 var array<label> mb = array.new_label()
 var array<label> me = array.new_label()
@@ -153,6 +185,7 @@ f_in(float price, float lower, float upper) =>
     price >= lower and price <= upper
 var Structure main = Structure.new(up=initialDir == "Upward")
 var Structure inside = Structure.new()
+var ChochState choch = ChochState.new()
 var bool started = false
 var bool halted = false
 var int totalPairs = 0
@@ -247,44 +280,36 @@ if barstate.isconfirmed
                         omittedPoints += f_trim_points(ml, mb, keepPoints)
                     if showEvents and msmView != "Off"
                         omittedEvents += f_marker(me, "PAIR CONFIRMED", lastEvent + " at " + f_time(time_close), false, color.blue, msmView == "Latest" ? 1 : 40)
-                if ev != 2
-                    bool qualifies = main.pending and not na(main.hi) and not na(main.li) and i >= main.identified and (main.up ? close < main.cl : close > main.ch)
-                    run := qualifies ? run + 1 : 0
-                    if run == 2
-                        chochCount += 1
-                        chochClose := time_close
-                        chochSide := main.up ? "Bearish" : "Bullish"
-                        float broken = main.up ? main.cl : main.ch
-                        chochAudit := chochSide + " CHOCH #" + str.tostring(chochCount) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nTimes: " + syminfo.timezone
-                        chochAudit += "\nBroken level: " + f_price(broken) + "\nClose 1: " + f_time(time_close[1]) + " | " + f_price(close[1]) + "\nClose 2: " + f_time(time_close) + " | " + f_price(close)
-                        chochAudit += "\nRequired: both strictly " + (main.up ? "below" : "above") + "; adjacent candles\nPoint 3 origin: " + f_time(array.get(ts, main.ti)) + " | " + f_price(main.tentative)
-                        chochAudit += "\nPoint 3 identified: " + f_time(main.known) + "\nEligible by close 1: " + (main.known <= time_close[1] ? "YES" : "NO") + "\nRestart reference OPEN: " + f_time(array.get(ts, main.ti))
-                        if chochView != "Off"
-                            if chochView == "Latest"
-                                int unused = f_ztrim(cb, cln, cz, 0)
-                            color ink = main.up ? color.maroon : color.green
-                            string tag = " #" + str.tostring(chochCount)
-                            f_zone(cb, cln, cz, main.li, false, (main.up ? "SBR" : "QML / A+") + tag, ink)
-                            f_zone(cb, cln, cz, main.hi, true, (main.up ? "QML / A+" : "RBS") + tag, ink)
-                            f_zone(cb, cln, cz, main.ti, main.up, (main.up ? "Double top" : "Double bottom") + tag, ink)
-                            omittedZones += f_ztrim(cb, cln, cz, keepChoch * 3)
-                            if showEvents
-                                omittedEvents += f_marker(ce, chochSide + " CHOCH" + tag, chochAudit, not main.up, ink, chochView == "Latest" ? 1 : keepChoch)
-                        line.delete(tentativeLine)
-                        label.delete(tentativeLabel)
-                        tentativeLine := na
-                        tentativeLabel := na
-                        main.ref := main.ti
-                        main.gate := i
-                        main.up := not main.up
-                        main.pairs := 0
-                        main.pending := false
-                        main.tentative := na
-                        main.ti := na
-                        run := 0
-                        changed := true
-                        trend := main.up ? "Marking upward structure" : "Marking downward structure"
-                        lastEvent := chochSide + " CHOCH " + str.tostring(chochCount)
+                bool confirmedChoch = choch.evaluate(main, i, ev, close, time_close)
+                run := choch.run
+                if confirmedChoch
+                    chochCount := choch.count
+                    chochClose := choch.confirmedAt
+                    chochSide := choch.bullish ? "Bullish" : "Bearish"
+                    float broken = main.up ? main.cl : main.ch
+                    chochAudit := chochSide + " CHOCH #" + str.tostring(chochCount) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nTimes: " + syminfo.timezone
+                    chochAudit += "\nBroken level: " + f_price(broken) + "\nClose 1: " + f_time(time_close[1]) + " | " + f_price(close[1]) + "\nClose 2: " + f_time(time_close) + " | " + f_price(close)
+                    chochAudit += "\nRequired: both strictly " + (main.up ? "below" : "above") + "; adjacent candles\nPoint 3 origin: " + f_time(array.get(ts, main.ti)) + " | " + f_price(main.tentative)
+                    chochAudit += "\nPoint 3 identified: " + f_time(main.known) + "\nEligible by close 1: " + (main.known <= time_close[1] ? "YES" : "NO") + "\nRestart reference OPEN: " + f_time(array.get(ts, main.ti))
+                    if chochView != "Off"
+                        if chochView == "Latest"
+                            int unused = f_ztrim(cb, cln, cz, 0)
+                        color ink = main.up ? color.maroon : color.green
+                        string tag = " #" + str.tostring(chochCount)
+                        f_zone(cb, cln, cz, main.li, false, (main.up ? "SBR" : "QML / A+") + tag, ink)
+                        f_zone(cb, cln, cz, main.hi, true, (main.up ? "QML / A+" : "RBS") + tag, ink)
+                        f_zone(cb, cln, cz, main.ti, main.up, (main.up ? "Double top" : "Double bottom") + tag, ink)
+                        omittedZones += f_ztrim(cb, cln, cz, keepChoch * 3)
+                        if showEvents
+                            omittedEvents += f_marker(ce, chochSide + " CHOCH" + tag, chochAudit, not main.up, ink, chochView == "Latest" ? 1 : keepChoch)
+                    line.delete(tentativeLine)
+                    label.delete(tentativeLabel)
+                    tentativeLine := na
+                    tentativeLabel := na
+                    bool restarted = main.restartAfterChoch(i)
+                    changed := true
+                    trend := main.up ? "Marking upward structure" : "Marking downward structure"
+                    lastEvent := chochSide + " CHOCH " + str.tostring(chochCount)
                 // Main continuation or CHOCH ends unfinished internal search/tracking.
                 if ev == 2 or changed
                     if irunning
@@ -402,7 +427,7 @@ if barstate.isconfirmed
                     istate := "ISS scope: switch to H1 / M5 / M1"
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.2", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.3-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(issCount) + " / " + issSide, f_time(issClose), str.tostring(rejected) + " / " + str.tostring(outsideCompletion) + " / " + str.tostring(cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -525,9 +550,9 @@ if barstate.islast
     table.cell(tjPanel, 1, 5, "Bullish current / bearish current / historical", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4.2", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.3-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "Newest confirmed TJL pair; start dependence unresolved", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "CHOCH refactor checkpoint; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjState
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
