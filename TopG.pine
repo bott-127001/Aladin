@@ -1,11 +1,10 @@
 //@version=6
-indicator("TopG v0.4.3-dev - CHOCH Calculation Boundary", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.4-dev - ISS Calculation Boundary", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// MTF checkpoint 1: explicit-input CHOCH counting and structure restart.
-// Chart-only; ISS, storage and lifecycle orchestration still require extraction.
+// Explicit-input MSM, CHOCH and ISS calculation methods; chart-only wrapper.
 // D-006: newest confirmed pair immediately becomes current TJL.
-// Manual-start dependence remains unresolved. No taps, usage or entries.
-// TradingView compilation and regression verification pending.
+// Storage, TJL lifecycle and event transport still need extraction. No entries.
+// Compilation and regression verification pending for this revision.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -39,9 +38,9 @@ f_ext(array<float> a, int first, int last, bool highest) =>
                 best := v
                 chosen := j
     [best, chosen]
-// Shared MSM calculation. This method does not read chart OHLC, time, global
-// histories, barstate or drawings. Its caller must supply an eligible closed candle.
-// Events: 0=none, 1=tentative, 2=confirmed pair, 3=empty-range skip.
+f_in(float price, float lower, float upper) =>
+    price >= lower and price <= upper
+// Calculation methods receive eligible completed source candles from the caller.
 type Structure
     bool up = true
     int ref = 0
@@ -86,8 +85,6 @@ method step(Structure s, int i, array<float> bodyHighs, array<float> bodyLows, f
                 s.pending := true
                 eventCode := 1
     eventCode
-// Calculation-only CHOCH state. Call once per eligible completed source candle,
-// after Structure.step and before restarting the structure or drawing its event.
 type ChochState
     int run = 0
     int count = 0
@@ -107,8 +104,6 @@ method evaluate(ChochState c, Structure s, int i, int structureEvent, float cand
             c.run := 0
             confirmed := true
     confirmed
-// Deliberately separate from evaluate: presentation reads the old direction and
-// original point 3 first. No price/time/global access or drawing calls here.
 method restartAfterChoch(Structure s, int confirmationIndex) =>
     s.ref := s.ti
     s.gate := confirmationIndex
@@ -118,6 +113,96 @@ method restartAfterChoch(Structure s, int confirmationIndex) =>
     s.tentative := na
     s.ti := na
     true
+// ISS owns its internal engine and histories. None of these methods accesses
+// chart OHLC/time, global histories, barstate, drawing objects or view inputs.
+// advance codes: 0=none, 1=tentative, 2=pair, 3=rejected, 4=ISS, 5=tracking-only.
+type ISSState
+    Structure internal = na
+    array<float> values = na
+    array<int> origins = na
+    bool running = false
+    bool eligible = false
+    float lower = na
+    float upper = na
+    int born = na
+    int candidates = 0
+    int count = 0
+    int rejected = 0
+    int outside = 0
+    int cancelled = 0
+    int confirmedAt = na
+    bool bullish = false
+    int internalEvent = 0
+    bool fifth = false
+    bool allInside = false
+    bool closeInside = false
+method beginSearch(ISSState s, Structure source, int i) =>
+    array.clear(s.values)
+    array.clear(s.origins)
+    s.internalEvent := 0
+    s.fifth := false
+    s.allInside := false
+    s.closeInside := false
+    float level2 = source.up ? source.cl : source.ch
+    bool found = not na(level2)
+    s.running := found
+    s.eligible := found
+    if found
+        s.candidates += 1
+        s.lower := math.min(level2, source.tentative)
+        s.upper := math.max(level2, source.tentative)
+        s.born := i
+        s.internal := Structure.new(up=not source.up, ref=source.ti, gate=i)
+    found
+method cancelSearch(ISSState s) =>
+    bool wasRunning = s.running
+    if wasRunning
+        s.cancelled += 1
+    s.running := false
+    s.eligible := false
+    wasRunning
+method advance(ISSState s, int i, array<float> bodyHighs, array<float> bodyLows, float candleOpen, float candleClose, float previousOpen, float previousClose, float previousHigh, float previousLow, int candleCloseTime) =>
+    int result = 0
+    s.internalEvent := 0
+    s.fifth := false
+    s.allInside := false
+    s.closeInside := false
+    if s.running and i > s.born
+        int ev = s.internal.step(i, bodyHighs, bodyLows, candleOpen, candleClose, previousOpen, previousClose, previousHigh, previousLow, candleCloseTime)
+        s.internalEvent := ev
+        bool bad = ev == 1 ? not f_in(s.internal.tentative, s.lower, s.upper) : ev == 2 ? not f_in(s.internal.ch, s.lower, s.upper) or not f_in(s.internal.cl, s.lower, s.upper) : false
+        if bad
+            s.running := false
+            s.eligible := false
+            s.rejected += 1
+            array.clear(s.values)
+            array.clear(s.origins)
+            result := 3
+        else
+            result := ev == 1 or ev == 2 ? ev : 0
+            if ev == 2 and s.eligible
+                array.push(s.values, s.internal.up ? s.internal.ch : s.internal.cl)
+                array.push(s.origins, s.internal.up ? s.internal.hi : s.internal.li)
+                array.push(s.values, s.internal.up ? s.internal.cl : s.internal.ch)
+                array.push(s.origins, s.internal.up ? s.internal.li : s.internal.hi)
+            if ev == 1 and s.eligible and s.internal.pairs == 2 and array.size(s.values) == 4
+                s.fifth := true
+                s.allInside := f_in(s.internal.tentative, s.lower, s.upper)
+                for n = 0 to 3
+                    s.allInside := s.allInside and f_in(array.get(s.values, n), s.lower, s.upper)
+                s.closeInside := f_in(candleClose, s.lower, s.upper)
+                if s.allInside and s.closeInside
+                    s.count += 1
+                    s.confirmedAt := candleCloseTime
+                    s.bullish := s.internal.up
+                    s.running := false
+                    s.eligible := false
+                    result := 4
+                else if not s.closeInside
+                    s.outside += 1
+                    s.eligible := false
+                    result := 5
+    result
 var array<line> ml = array.new_line()
 var array<label> mb = array.new_label()
 var array<label> me = array.new_label()
@@ -181,11 +266,9 @@ f_marker(array<label> a, string caption, string detail, bool bullish, color ink,
         label.delete(array.shift(a))
         removed += 1
     removed
-f_in(float price, float lower, float upper) =>
-    price >= lower and price <= upper
 var Structure main = Structure.new(up=initialDir == "Upward")
-var Structure inside = Structure.new()
 var ChochState choch = ChochState.new()
+var ISSState iss = ISSState.new(internal=Structure.new(), values=array.new_float(), origins=array.new_int())
 var bool started = false
 var bool halted = false
 var int totalPairs = 0
@@ -202,25 +285,10 @@ var int omittedZones = 0
 var int omittedEvents = 0
 var line tentativeLine = na
 var label tentativeLabel = na
-// ISS status: eligible search versus tracking-only are deliberately separate.
-var bool irunning = false
-var bool eligible = false
-var float lowerBound = na
-var float upperBound = na
-var int candidate = 0
 var int main3Origin = na
 var int main2Origin = na
-var int born = na
 var string istate = "Waiting for main point 3"
 var string issAudit = "No ISS candidate."
-var int issCount = 0
-var int rejected = 0
-var int outsideCompletion = 0
-var int cancelled = 0
-var int issClose = na
-var string issSide = "None"
-var array<float> pvalues = array.new_float()
-var array<int> porigins = array.new_int()
 var line itl = na
 var label itb = na
 var table panel = table.new(position.top_right, 2, 17, border_width=1, border_color=color.gray)
@@ -310,53 +378,36 @@ if barstate.isconfirmed
                     changed := true
                     trend := main.up ? "Marking upward structure" : "Marking downward structure"
                     lastEvent := chochSide + " CHOCH " + str.tostring(chochCount)
-                // Main continuation or CHOCH ends unfinished internal search/tracking.
                 if ev == 2 or changed
-                    if irunning
-                        cancelled += 1
+                    bool wasRunning = iss.cancelSearch()
+                    if wasRunning
                         istate := changed ? "Cancelled by main CHOCH" : "Cancelled by main continuation"
                         issAudit += "\n" + istate + " at " + f_time(time_close)
-                    irunning := false
-                    eligible := false
                     f_clear_points(dl, db)
                     line.delete(itl)
                     label.delete(itb)
                     itl := na
                     itb := na
-                // A new main point 3 starts a fresh fixed-boundary search, never a revival.
                 if ev == 1 and not changed and issScope
                     f_clear_points(dl, db)
                     line.delete(itl)
                     label.delete(itb)
                     itl := na
                     itb := na
-                    array.clear(pvalues)
-                    array.clear(porigins)
-                    float level2 = main.up ? main.cl : main.ch
-                    if not na(level2)
-                        candidate += 1
-                        lowerBound := math.min(level2, main.tentative)
-                        upperBound := math.max(level2, main.tentative)
+                    bool found = iss.beginSearch(main, i)
+                    if found
                         main3Origin := array.get(ts, main.ti)
                         main2Origin := array.get(ts, main.up ? main.li : main.hi)
-                        born := i
-                        inside := Structure.new(up=not main.up, ref=main.ti, gate=i)
-                        irunning := true
-                        eligible := true
                         istate := "Eligible: building internal structure"
-                        issAudit := "Candidate #" + str.tostring(candidate) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nTimes: " + syminfo.timezone + "\nStarted at close: " + f_time(time_close)
-                        issAudit += "\nFixed inclusive range: " + f_price(lowerBound) + " to " + f_price(upperBound) + "\nMain level 2 origin: " + f_time(main2Origin) + "\nMain level 3 origin: " + f_time(main3Origin)
+                        issAudit := "Candidate #" + str.tostring(iss.candidates) + " | " + syminfo.tickerid + " | " + timeframe.period + "\nTimes: " + syminfo.timezone + "\nStarted at close: " + f_time(time_close)
+                        issAudit += "\nFixed inclusive range: " + f_price(iss.lower) + " to " + f_price(iss.upper) + "\nMain level 2 origin: " + f_time(main2Origin) + "\nMain level 3 origin: " + f_time(main3Origin)
                     else
-                        irunning := false
-                        eligible := false
                         istate := "No confirmed main level 2 yet"
-                if irunning and i > born
-                    int iev = inside.step(i, tops, bots, open, close, open[1], close[1], high[1], low[1], time_close)
-                    bool badPoint = iev == 1 ? not f_in(inside.tentative, lowerBound, upperBound) : iev == 2 ? not f_in(inside.ch, lowerBound, upperBound) or not f_in(inside.cl, lowerBound, upperBound) : false
-                    if badPoint
-                        irunning := false
-                        eligible := false
-                        rejected += 1
+                if iss.running and i > iss.born
+                    int outcome = iss.advance(i, tops, bots, open, close, open[1], close[1], high[1], low[1], time_close)
+                    Structure inside = iss.internal
+                    int iev = iss.internalEvent
+                    if outcome == 3
                         istate := "Rejected: internal marked price outside range"
                         issAudit += "\n" + istate + " at " + f_time(time_close)
                         if iev == 1
@@ -368,19 +419,12 @@ if barstate.isconfirmed
                         label.delete(itb)
                         itl := na
                         itb := na
-                        array.clear(pvalues)
-                        array.clear(porigins)
                     else
                         if iev == 2
                             line.delete(itl)
                             label.delete(itb)
                             itl := na
                             itb := na
-                            if eligible
-                                array.push(pvalues, inside.up ? inside.ch : inside.cl)
-                                array.push(porigins, inside.up ? inside.hi : inside.li)
-                                array.push(pvalues, inside.up ? inside.cl : inside.ch)
-                                array.push(porigins, inside.up ? inside.li : inside.hi)
                             if showInternal and issView != "Off"
                                 f_point(dl, db, inside.hi, inside.ch, true, "iCH " + str.tostring(inside.pairs), color.purple, false)
                                 f_point(dl, db, inside.li, inside.cl, false, "iCL " + str.tostring(inside.pairs), color.purple, false)
@@ -390,45 +434,35 @@ if barstate.isconfirmed
                                 f_point(dl, db, inside.ti, inside.tentative, inside.up, "iTentative", color.purple, true)
                                 itl := array.pop(dl)
                                 itb := array.pop(db)
-                            if eligible and inside.pairs == 2 and array.size(pvalues) == 4
-                                // All prior tentative/confirmed points have been boundary-checked.
-                                bool allInside = f_in(inside.tentative, lowerBound, upperBound)
-                                for n = 0 to 3
-                                    allInside := allInside and f_in(array.get(pvalues, n), lowerBound, upperBound)
-                                bool completionInside = f_in(close, lowerBound, upperBound)
+                            if iss.fifth
                                 issAudit += "\nFifth point identified at close: " + f_time(time_close)
                                 for n = 0 to 3
-                                    issAudit += "\nInternal P" + str.tostring(n + 1) + ": " + f_price(array.get(pvalues, n)) + " | origin " + f_time(array.get(ts, array.get(porigins, n)))
-                                issAudit += "\nInternal P5 tentative: " + f_price(inside.tentative) + " | origin " + f_time(array.get(ts, inside.ti)) + "\nCompletion close: " + f_price(close) + "\nAll five in range: " + (allInside ? "YES" : "NO") + "\nCompletion close in range: " + (completionInside ? "YES" : "NO")
-                                if allInside and completionInside
-                                    issCount += 1
-                                    issClose := time_close
-                                    issSide := inside.up ? "Bullish" : "Bearish"
-                                    istate := "Confirmed " + issSide + " ISS; search ended"
-                                    issAudit += "\nCONFIRMED " + issSide + " ISS #" + str.tostring(issCount) + "\nZones use internal P3 and P4. No additional main CHOCH required."
+                                    issAudit += "\nInternal P" + str.tostring(n + 1) + ": " + f_price(array.get(iss.values, n)) + " | origin " + f_time(array.get(ts, array.get(iss.origins, n)))
+                                issAudit += "\nInternal P5 tentative: " + f_price(inside.tentative) + " | origin " + f_time(array.get(ts, inside.ti)) + "\nCompletion close: " + f_price(close) + "\nAll five in range: " + (iss.allInside ? "YES" : "NO") + "\nCompletion close in range: " + (iss.closeInside ? "YES" : "NO")
+                                if outcome == 4
+                                    string side = iss.bullish ? "Bullish" : "Bearish"
+                                    istate := "Confirmed " + side + " ISS; search ended"
+                                    issAudit += "\nCONFIRMED " + side + " ISS #" + str.tostring(iss.count) + "\nZones use internal P3 and P4. No additional main CHOCH required."
                                     if issView != "Off"
                                         if issView == "Latest"
                                             int unused = f_ztrim(ib, iln, iz, 0)
-                                        string tag = " ISS #" + str.tostring(issCount)
+                                        string tag = " ISS #" + str.tostring(iss.count)
                                         color ink = inside.up ? color.teal : color.fuchsia
-                                        f_zone(ib, iln, iz, array.get(porigins, 2), inside.up, (inside.up ? "RBS" : "SBR") + tag, ink)
-                                        f_zone(ib, iln, iz, array.get(porigins, 3), not inside.up, (inside.up ? "Buying A+" : "Selling A+") + tag, ink)
+                                        f_zone(ib, iln, iz, array.get(iss.origins, 2), inside.up, (inside.up ? "RBS" : "SBR") + tag, ink)
+                                        f_zone(ib, iln, iz, array.get(iss.origins, 3), not inside.up, (inside.up ? "Buying A+" : "Selling A+") + tag, ink)
                                         omittedZones += f_ztrim(ib, iln, iz, keepISS * 2)
                                         if showEvents
-                                            omittedEvents += f_marker(ie, issSide + " ISS #" + str.tostring(issCount), issAudit, inside.up, ink, issView == "Latest" ? 1 : keepISS)
-                                    irunning := false
-                                    eligible := false
-                                else if not completionInside
-                                    outsideCompletion += 1
-                                    eligible := false
+                                            omittedEvents += f_marker(ie, side + " ISS #" + str.tostring(iss.count), issAudit, inside.up, ink, issView == "Latest" ? 1 : keepISS)
+                                else if outcome == 5
                                     istate := "Tracking ONLY: outside-range completion close"
                                     issAudit += "\nNO ISS. Eligibility permanently lost for this main point 3; internal tracking continues."
                 if not issScope
                     istate := "ISS scope: switch to H1 / M5 / M1"
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.3-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
-    array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(issCount) + " / " + issSide, f_time(issClose), str.tostring(rejected) + " / " + str.tostring(outsideCompletion) + " / " + str.tostring(cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
+    string issSide = iss.count == 0 ? "None" : iss.bullish ? "Bullish" : "Bearish"
+    array<string> keys = array.from("TopG v0.4.4-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(iss.count) + " / " + issSide, f_time(iss.confirmedAt), str.tostring(iss.rejected) + " / " + str.tostring(iss.outside) + " / " + str.tostring(iss.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
         table.cell(panel, 1, row, array.get(vals, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -503,7 +537,6 @@ if barstate.isconfirmed and started and not halted and tjlScope
                     r.state := "Invalidated by source CHOCH"
         currentTJL := na
         newestTJL := na
-    // D-006: replace only at confirmed-pair close, never at the later point-3 event.
     if totalPairs > seenPairs
         if not na(currentTJL)
             currentTJL.ended := time_close
@@ -517,7 +550,6 @@ if barstate.isconfirmed and started and not halted and tjlScope
             omittedTJL += 1
     int currentIndex = array.size(ts) - 1
     bool newPoint3 = main.pending and main.identified == currentIndex and main.known == time_close
-    // Optional audit metadata only. This cannot promote, replace or reactivate a set.
     if newPoint3 and not na(newestTJL)
         if newestTJL.up == main.up and newestTJL.serial == totalPairs and na(newestTJL.ended) and na(newestTJL.p3)
             newestTJL.p3 := array.get(ts, main.ti)
@@ -550,9 +582,9 @@ if barstate.islast
     table.cell(tjPanel, 1, 5, "Bullish current / bearish current / historical", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4.3-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.4-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "CHOCH refactor checkpoint; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "ISS refactor checkpoint; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjState
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
