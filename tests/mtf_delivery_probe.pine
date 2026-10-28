@@ -1,0 +1,56 @@
+//@version=6
+indicator("TopG MTF Delivery Probe v0.1 - NOT Strategy", overlay=true)
+// Platform diagnostic only. TopG.pine remains the sole strategy implementation.
+// Every requested expression uses the previous source bar with lookahead_on.
+// No barstate.isconfirmed inside requests; no lower-timeframe requests.
+tableTimezone = input.string("America/New_York", "Table timezone (IANA)")
+if not (timeframe.isminutes and timeframe.multiplier == 1)
+    runtime.error("Delivery probe: use an M1 chart. This test does not support other operating timeframes.")
+[dOpen, dClose, dPrice] = request.security(syminfo.tickerid, "1D", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+[h4Open, h4Close, h4Price] = request.security(syminfo.tickerid, "240", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+[h1Open, h1Close, h1Price] = request.security(syminfo.tickerid, "60", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+[m5Open, m5Close, m5Price] = request.security(syminfo.tickerid, "5", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+array<int> sourceOpens = array.from(dOpen, h4Open, h1Open, m5Open)
+array<int> sourceCloses = array.from(dClose, h4Close, h1Close, m5Close)
+array<float> sourcePrices = array.from(dPrice, h4Price, h1Price, m5Price)
+// Intrabar persistence avoids repeatedly replacing a first live observation.
+// These primitive collections are diagnostic state, not trading eligibility.
+varip array<int> seenCloses = array.new_int(4, na)
+varip array<int> observedChartOpens = array.new_int(4, na)
+varip array<int> observedLiveTimes = array.new_int(4, na)
+varip array<string> modes = array.new_string(4, "Waiting for source data")
+for n = 0 to 3
+    int sourceClose = array.get(sourceCloses, n)
+    int seen = array.get(seenCloses, n)
+    if not na(sourceClose)
+        if sourceClose > time
+            runtime.error("Delivery probe: received a source close later than the operating M1 bar open.")
+        if na(seen) or sourceClose != seen
+            if not na(seen) and sourceClose < seen
+                runtime.error("Delivery probe: source close moved backward during this execution.")
+            bool initial = na(seen)
+            array.set(seenCloses, n, sourceClose)
+            array.set(observedChartOpens, n, time)
+            array.set(observedLiveTimes, n, barstate.isrealtime ? timenow : na)
+            array.set(modes, n, initial ? "INITIAL sample" : barstate.isrealtime ? "LIVE observed" : "Historical mapping")
+f_stamp(int stamp) =>
+    na(stamp) ? "N/A" : str.format_time(stamp, "yyyy-MM-dd HH:mm:ss", tableTimezone)
+var table panel = table.new(position.top_right, 8, 7, border_width=1, border_color=color.gray)
+if barstate.isfirst
+    table.merge_cells(panel, 0, 0, 7, 0)
+    table.merge_cells(panel, 0, 6, 7, 6)
+if barstate.islast
+    table.cell(panel, 0, 0, "TopG MTF delivery probe | " + syminfo.tickerid + " | Operating M1 | Times: " + tableTimezone, bgcolor=color.white, text_color=color.black, text_size=size.small)
+    array<string> headers = array.from("Source", "Source OPEN", "Source CLOSE", "Source close price", "First observed M1 OPEN", "First observed LIVE time", "M1-open gap (minutes)", "Observation type")
+    array<string> names = array.from("D1", "H4", "H1", "M5")
+    for col = 0 to 7
+        table.cell(panel, col, 1, array.get(headers, col), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+    for n = 0 to 3
+        int observed = array.get(observedChartOpens, n)
+        int sourceClose = array.get(sourceCloses, n)
+        string gap = na(observed) or na(sourceClose) ? "N/A" : str.tostring((observed - sourceClose) / 60000.0, "#.###")
+        float price = array.get(sourcePrices, n)
+        array<string> values = array.from(array.get(names, n), f_stamp(array.get(sourceOpens, n)), f_stamp(sourceClose), na(price) ? "N/A" : str.tostring(price, format.mintick), f_stamp(observed), f_stamp(array.get(observedLiveTimes, n)), gap, array.get(modes, n))
+        for col = 0 to 7
+            table.cell(panel, col, n + 2, array.get(values, col), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+    table.cell(panel, 0, 6, "Diagnostic only: no TopG detection or entries. INITIAL samples do not prove first availability. N/A LIVE time is normal for historical mapping.", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
