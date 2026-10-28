@@ -1,10 +1,10 @@
 //@version=6
-indicator("TopG v0.4.5-dev - TJL and Candle State", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.5.1-dev - Storage Recovery Candidate", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// Explicit-input candle storage, MSM, CHOCH, ISS and TJL lifecycle methods.
-// D-006: newest confirmed pair immediately becomes current TJL.
-// Chart-only: context orchestration/event transport remain. No taps or entries.
-// Compilation and regression verification pending for this revision.
+// Restore the direct persistent arrays/append path used in v0.4.4.
+// TJL lifecycle remains extracted; source candle arrays are passed explicitly.
+// Recovery candidate, NOT a verified fix. CandleStore extraction is deferred.
+// D-006: newest confirmed pair immediately current. Chart-only; no entries.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -19,26 +19,11 @@ showAudit = input.bool(false, "Show latest CHOCH audit panel", group="Display")
 showISSAudit = input.bool(false, "Show ISS audit (takes panel priority)", group="Display")
 limit = input.int(20000, "Candle storage safety limit", minval=100, maxval=30000, group="Safety")
 bool issScope = timeframe.isminutes and (timeframe.multiplier == 60 or timeframe.multiplier == 5 or timeframe.multiplier == 1)
-// A future context must construct its own store, not share these chart aliases.
-type CandleStore
-    array<float> bodyHighs = na
-    array<float> bodyLows = na
-    array<float> wickHighs = na
-    array<float> wickLows = na
-    array<int> opens = na
-method appendCandle(CandleStore s, float candleOpen, float candleHigh, float candleLow, float candleClose, int candleOpenTime) =>
-    array.push(s.bodyHighs, math.max(candleOpen, candleClose))
-    array.push(s.bodyLows, math.min(candleOpen, candleClose))
-    array.push(s.wickHighs, candleHigh)
-    array.push(s.wickLows, candleLow)
-    array.push(s.opens, candleOpenTime)
-    array.size(s.opens) - 1
-var CandleStore candles = CandleStore.new(bodyHighs=array.new_float(), bodyLows=array.new_float(), wickHighs=array.new_float(), wickLows=array.new_float(), opens=array.new_int())
-var array<float> tops = candles.bodyHighs
-var array<float> bots = candles.bodyLows
-var array<float> wh = candles.wickHighs
-var array<float> wl = candles.wickLows
-var array<int> ts = candles.opens
+var array<float> tops = array.new_float()
+var array<float> bots = array.new_float()
+var array<float> wh = array.new_float()
+var array<float> wl = array.new_float()
+var array<int> ts = array.new_int()
 f_time(int stamp) =>
     na(stamp) ? "None" : str.format_time(stamp, "yyyy-MM-dd HH:mm", syminfo.timezone)
 f_price(float price) =>
@@ -317,7 +302,16 @@ if barstate.isconfirmed
             halted := true
             lastEvent := "STOPPED: candle storage limit"
         else
-            int i = candles.appendCandle(open, high, low, close, time)
+            int previousStored = array.size(ts)
+            array.push(tops, math.max(open, close))
+            array.push(bots, math.min(open, close))
+            array.push(wh, high)
+            array.push(wl, low)
+            array.push(ts, time)
+            int stored = array.size(ts)
+            if stored != previousStored + 1 or array.size(tops) != stored or array.size(bots) != stored or array.size(wh) != stored or array.size(wl) != stored
+                runtime.error("TopG candle-storage invariant failed; stop regression test")
+            int i = stored - 1
             bool continuation = main.pending and i > main.identified and (main.up ? close > main.tentative : close < main.tentative)
             bool reversal = main.pending and not na(main.ch) and not na(main.cl) and (main.up ? close < main.cl : close > main.ch)
             if continuation and reversal and run == 1
@@ -471,7 +465,7 @@ if barstate.isconfirmed
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
     string issSide = iss.count == 0 ? "None" : iss.bullish ? "Bullish" : "Bearish"
-    array<string> keys = array.from("TopG v0.4.5-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close /cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.5.1-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close /cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(iss.count) + " / " + issSide, f_time(iss.confirmedAt), str.tostring(iss.rejected) + " / " + str.tostring(iss.outside) + " / " + str.tostring(iss.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -511,9 +505,9 @@ type TJLState
     int seenChoch = 0
     int omitted = 0
     int sets = 0
-// Source data is captured at pair confirmation; rendering no longer looks up
-// original candle indices. Lifecycle timestamps/status remain intentionally mutable.
-method synchronize(TJLState s, Structure source, CandleStore history, int pairCount, int chochEvents, int i, int candleCloseTime, int retainedPairs) =>
+// Explicit arrays replace the failed CandleStore/alias route. Scalar candle
+// snapshots and TJL lifecycle extraction remain; timestamps are not backdated.
+method synchronize(TJLState s, Structure source, array<float> bodyHighs, array<float> bodyLows, array<float> wickHighs, array<float> wickLows, array<int> candleOpens, int pairCount, int chochEvents, int i, int candleCloseTime, int retainedPairs) =>
     if chochEvents > s.seenChoch
         if array.size(s.records) > 0
             for j = 0 to array.size(s.records) - 1
@@ -527,7 +521,7 @@ method synchronize(TJLState s, Structure source, CandleStore history, int pairCo
         if not na(s.current)
             s.current.ended := candleCloseTime
             s.current.state := "Replaced by newer confirmed pair"
-        s.newest := TJLRecord.new(serial=pairCount, up=source.up, hi=source.hi, li=source.li, made=candleCloseTime, ready=candleCloseTime, highOrigin=array.get(history.opens, source.hi), lowOrigin=array.get(history.opens, source.li), highUpper=array.get(history.wickHighs, source.hi), highLower=array.get(history.bodyHighs, source.hi), lowUpper=array.get(history.bodyLows, source.li), lowLower=array.get(history.wickLows, source.li))
+        s.newest := TJLRecord.new(serial=pairCount, up=source.up, hi=source.hi, li=source.li, made=candleCloseTime, ready=candleCloseTime, highOrigin=array.get(candleOpens, source.hi), lowOrigin=array.get(candleOpens, source.li), highUpper=array.get(wickHighs, source.hi), highLower=array.get(bodyHighs, source.hi), lowUpper=array.get(bodyLows, source.li), lowLower=array.get(wickLows, source.li))
         s.current := s.newest
         s.sets += 1
         array.push(s.records, s.newest)
@@ -537,14 +531,14 @@ method synchronize(TJLState s, Structure source, CandleStore history, int pairCo
     bool newPoint3 = source.pending and source.identified == i and source.known == candleCloseTime
     if newPoint3 and not na(s.newest)
         if s.newest.up == source.up and s.newest.serial == pairCount and na(s.newest.ended) and na(s.newest.p3)
-            s.newest.p3 := array.get(history.opens, source.ti)
+            s.newest.p3 := array.get(candleOpens, source.ti)
             s.newest.p3price := source.tentative
     s.seenPairs := pairCount
     s.seenChoch := chochEvents
     true
-var TJLState tjState = TJLState.new(records=array.new<TJLRecord>())
-var array<TJLRecord> tjlRecords = tjState.records
-// Chart-only presentation aliases; future requested contexts must return snapshots.
+// Create the retained-record array directly, then pass its reference into state.
+var array<TJLRecord> tjlRecords = array.new<TJLRecord>()
+var TJLState tjState = TJLState.new(records=tjlRecords)
 var TJLRecord newestTJL = na
 var TJLRecord currentTJL = na
 var int omittedTJL = 0
@@ -582,11 +576,13 @@ f_tjl_draw(TJLRecord r, bool first) =>
     array.push(tjl, ln)
     array.push(tjz, lb)
 if barstate.isconfirmed and started and not halted and tjlScope
-    bool synchronized = tjState.synchronize(main, candles, totalPairs, chochCount, array.size(ts) - 1, time_close, keepTJL)
+    bool synchronized = tjState.synchronize(main, tops, bots, wh, wl, ts, totalPairs, chochCount, array.size(ts) - 1, time_close, keepTJL)
     newestTJL := tjState.newest
     currentTJL := tjState.current
     omittedTJL := tjState.omitted
     readySets := tjState.sets
+    if array.size(tjlRecords) != array.size(tjState.records)
+        runtime.error("TopG TJL record-storage invariant failed; stop regression test")
 // Monday alone does nothing. Used-level tracking is not implemented in this release.
 if barstate.islast
     int deleted = f_ztrim(tjb, tjl, tjz, 0)
@@ -613,9 +609,9 @@ if barstate.islast
     table.cell(tjPanel, 1, 5, "Bullish current / bearish current / historical", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4.5-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.5.1-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "TJL/store refactor; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "Storage recovery candidate; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjStateText
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
