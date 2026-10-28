@@ -589,7 +589,7 @@ f_tjl_draw(array<box> bs, array<line> ls, array<label> lbs, TJLRecord r, bool fi
     string identity = syminfo.tickerid + "|" + timeframe.period + "|" + (r.up ? "BULL|" : "BEAR|") + (highSide ? "H|" : "L|") + str.tostring(origin)
     label.set_tooltip(lb, f_tjl_detail(r) + "\nLevel ID: " + identity + "\nZone: " + f_price(lower) + " to " + f_price(upper))
     array.push(bs, bx)
-    array.push(tjl, ln)
+    array.push(ls, ln)
     array.push(lbs, lb)
 var array<float> tops = array.new_float()
 var array<float> bots = array.new_float()
