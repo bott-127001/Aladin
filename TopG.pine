@@ -1,10 +1,10 @@
 //@version=6
-indicator("TopG v0.4.5.1-dev - Storage Recovery Candidate", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.5.2-dev - Single TJL Collection Candidate", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Sources: MSM.pdf v2, Choch.pdf v2, ISS.pdf v1, MTF-Analysis.pdf v1.
-// Restore the direct persistent arrays/append path used in v0.4.4.
-// TJL lifecycle remains extracted; source candle arrays are passed explicitly.
-// Recovery candidate, NOT a verified fix. CandleStore extraction is deferred.
-// D-006: newest confirmed pair immediately current. Chart-only; no entries.
+// Direct persistent candle arrays; a single explicit TJL record collection.
+// TJLState has no records field. Lifecycle receives the rendering array directly.
+// Test candidate, NOT a verified fix. Chart-only; no MTF requests or entries.
+// D-006: newest confirmed pair immediately becomes current.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -465,7 +465,7 @@ if barstate.isconfirmed
 if barstate.islast
     string state = halted ? "HALTED: see last event" : not started ? "Start not found: select loaded candle OPEN" : main.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
     string issSide = iss.count == 0 ? "None" : iss.bullish ? "Bullish" : "Bearish"
-    array<string> keys = array.from("TopG v0.4.5.1-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close /cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.5.2-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close /cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM + CHOCH + ISS / UNVERIFIED", state, (main.up ? "Upward" : "Downward") + " / " + timeframe.period, trend, str.tostring(totalPairs) + " / " + str.tostring(main.pairs), f_price(main.ch) + " / " + f_price(main.cl), f_price(main.tentative) + " / " + str.tostring(run), str.tostring(chochCount) + " / " + chochSide, f_time(chochClose), istate, str.tostring(iss.count) + " / " + issSide, f_time(iss.confirmedAt), str.tostring(iss.rejected) + " / " + str.tostring(iss.outside) + " / " + str.tostring(iss.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), lastEvent, "Chart timeframe only; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -498,20 +498,19 @@ type TJLRecord
     float lowUpper = na
     float lowLower = na
 type TJLState
-    array<TJLRecord> records = na
     TJLRecord newest = na
     TJLRecord current = na
     int seenPairs = 0
     int seenChoch = 0
     int omitted = 0
     int sets = 0
-// Explicit arrays replace the failed CandleStore/alias route. Scalar candle
-// snapshots and TJL lifecycle extraction remain; timestamps are not backdated.
-method synchronize(TJLState s, Structure source, array<float> bodyHighs, array<float> bodyLows, array<float> wickHighs, array<float> wickLows, array<int> candleOpens, int pairCount, int chochEvents, int i, int candleCloseTime, int retainedPairs) =>
+// The caller owns the sole records array. This method reads/writes that explicit
+// collection; no second array reference is stored in TJLState.
+method synchronize(TJLState s, array<TJLRecord> records, Structure source, array<float> bodyHighs, array<float> bodyLows, array<float> wickHighs, array<float> wickLows, array<int> candleOpens, int pairCount, int chochEvents, int i, int candleCloseTime, int retainedPairs) =>
     if chochEvents > s.seenChoch
-        if array.size(s.records) > 0
-            for j = 0 to array.size(s.records) - 1
-                TJLRecord r = array.get(s.records, j)
+        if array.size(records) > 0
+            for j = 0 to array.size(records) - 1
+                TJLRecord r = array.get(records, j)
                 if na(r.ended)
                     r.ended := candleCloseTime
                     r.state := "Invalidated by source CHOCH"
@@ -524,9 +523,9 @@ method synchronize(TJLState s, Structure source, array<float> bodyHighs, array<f
         s.newest := TJLRecord.new(serial=pairCount, up=source.up, hi=source.hi, li=source.li, made=candleCloseTime, ready=candleCloseTime, highOrigin=array.get(candleOpens, source.hi), lowOrigin=array.get(candleOpens, source.li), highUpper=array.get(wickHighs, source.hi), highLower=array.get(bodyHighs, source.hi), lowUpper=array.get(bodyLows, source.li), lowLower=array.get(wickLows, source.li))
         s.current := s.newest
         s.sets += 1
-        array.push(s.records, s.newest)
-        while array.size(s.records) > retainedPairs
-            TJLRecord dropped = array.shift(s.records)
+        array.push(records, s.newest)
+        while array.size(records) > retainedPairs
+            TJLRecord dropped = array.shift(records)
             s.omitted += 1
     bool newPoint3 = source.pending and source.identified == i and source.known == candleCloseTime
     if newPoint3 and not na(s.newest)
@@ -536,9 +535,8 @@ method synchronize(TJLState s, Structure source, array<float> bodyHighs, array<f
     s.seenPairs := pairCount
     s.seenChoch := chochEvents
     true
-// Create the retained-record array directly, then pass its reference into state.
 var array<TJLRecord> tjlRecords = array.new<TJLRecord>()
-var TJLState tjState = TJLState.new(records=tjlRecords)
+var TJLState tjState = TJLState.new()
 var TJLRecord newestTJL = na
 var TJLRecord currentTJL = na
 var int omittedTJL = 0
@@ -576,13 +574,21 @@ f_tjl_draw(TJLRecord r, bool first) =>
     array.push(tjl, ln)
     array.push(tjz, lb)
 if barstate.isconfirmed and started and not halted and tjlScope
-    bool synchronized = tjState.synchronize(main, tops, bots, wh, wl, ts, totalPairs, chochCount, array.size(ts) - 1, time_close, keepTJL)
+    bool synchronized = tjState.synchronize(tjlRecords, main, tops, bots, wh, wl, ts, totalPairs, chochCount, array.size(ts) - 1, time_close, keepTJL)
     newestTJL := tjState.newest
     currentTJL := tjState.current
     omittedTJL := tjState.omitted
     readySets := tjState.sets
-    if array.size(tjlRecords) != array.size(tjState.records)
-        runtime.error("TopG TJL record-storage invariant failed; stop regression test")
+    int retained = array.size(tjlRecords)
+    if retained != math.min(readySets, keepTJL) or omittedTJL + retained != readySets
+        runtime.error("TopG TJL retention invariant failed; retained=" + str.tostring(retained) + ", sets=" + str.tostring(readySets) + ", omitted=" + str.tostring(omittedTJL))
+    if not na(currentTJL)
+        if retained == 0
+            runtime.error("TopG current TJL has no retained record")
+        else
+            TJLRecord lastRecord = array.get(tjlRecords, retained - 1)
+            if lastRecord.serial != currentTJL.serial or not na(lastRecord.ended)
+                runtime.error("TopG current TJL and retained record disagree")
 // Monday alone does nothing. Used-level tracking is not implemented in this release.
 if barstate.islast
     int deleted = f_ztrim(tjb, tjl, tjz, 0)
@@ -609,9 +615,9 @@ if barstate.islast
     table.cell(tjPanel, 1, 5, "Bullish current / bearish current / historical", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 0, 6, "Execution status", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(tjPanel, 1, 6, "No taps / usage / Buy-Sell yet", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 0, 0, "TopG v0.4.5.1-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 0, 0, "TopG v0.4.5.2-dev", bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(panel, 1, 0, "MSM CHOCH ISS TJL / UNVERIFIED", bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(panel, 1, 16, "Storage recovery candidate; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(panel, 1, 16, "Single TJL collection candidate; chart-only; no entries", bgcolor=color.white, text_color=color.black, text_size=size.small)
     if showTJLAudit
         string report = not na(currentTJL) ? f_tjl_detail(currentTJL) : not na(newestTJL) ? f_tjl_detail(newestTJL) : "No current TJL record. " + tjStateText
         table.cell(audit, 0, 0, report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
