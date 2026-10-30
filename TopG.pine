@@ -1,5 +1,5 @@
 //@version=6
-indicator("TopG v0.4.7-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.4.8-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
 // Native engine plus opt-in H1 transport audit. UNVERIFIED until chart tests pass.
 // D-006 preserved. H1 audit is diagnostic only; no taps, usage or entries.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
@@ -752,7 +752,7 @@ if barstate.islast and h1Diagnostic != "Requested H1 on M1"
     ChochState ch = ctx.choch
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.7-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.8-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native context + event snapshots; no MTF / entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -787,14 +787,22 @@ if barstate.islast and h1Diagnostic != "Requested H1 on M1"
     else
         table.clear(eventPanel, 0, 0, 1, 3)
 
-// v0.4.7 checkpoint: scalar H1 state/event audit, NOT execution integration.
+// v0.4.8: retain latest nonempty H1 batch sequence/IDs; NOT execution integration.
 // The shared detector above is unchanged. No collections cross the request.
 type H1Audit
     string report = ""
     int sourceClose = na
     int sequence = 0
     int batchSize = 0
+    int retainedClose = na
+    int retainedSize = 0
+    string retainedIDs = "None"
 f_h1_audit(ContextState c, int candles, array<CalcEvent> events) =>
+    // Function-local cache is independent in native and requested contexts.
+    // Empty source candles do not erase it; reload rebuilds it from history.
+    var int retainedClose = na
+    var int retainedSize = 0
+    var string retainedIDs = "None"
     Structure m = c.main
     string r = (c.halted ? "HALTED" : c.started ? "Started" : "START NOT FOUND: check H1 reference/history") + " | " + c.trend
     r += "\nFirst source OPEN: " + f_time(c.firstOpen) + "\nLast processed CLOSE: " + f_time(c.lastClose)
@@ -815,11 +823,18 @@ f_h1_audit(ContextState c, int candles, array<CalcEvent> events) =>
         r += " | No current set"
     r += "\nCalculation events / this batch: " + str.tostring(c.sequence) + " / " + str.tostring(array.size(events))
     if array.size(events) > 0
+        retainedClose := c.lastClose
+        retainedSize := array.size(events)
+        retainedIDs := ""
         for n = 0 to array.size(events) - 1
             CalcEvent e = array.get(events, n)
-            r += "\n" + str.tostring(e.sequence) + ": " + e.id
+            string eventLine = str.tostring(e.sequence) + ": " + e.id
+            r += "\n" + eventLine
+            retainedIDs += (n == 0 ? "" : "\n") + eventLine
+    r += "\nRetained nonempty batch CLOSE / size: " + f_time(retainedClose) + " / " + str.tostring(retainedSize)
+    r += "\nRetained event sequence / IDs:\n" + retainedIDs
     r += "\nLast main event: " + c.lastEvent
-    H1Audit.new(report=r, sourceClose=c.lastClose, sequence=c.sequence, batchSize=array.size(events))
+    H1Audit.new(report=r, sourceClose=c.lastClose, sequence=c.sequence, batchSize=array.size(events), retainedClose=retainedClose, retainedSize=retainedSize, retainedIDs=retainedIDs)
 f_h1_requested(int reference, bool up, int capacity, int retained) =>
     var ContextState c = f_context(up)
     var array<float> bh = array.new_float()
@@ -861,8 +876,8 @@ if h1Requested and not na(h1Packet)
         h1ObservedLive := barstate.isrealtime ? timenow : na
 var table h1Panel = table.new(position.top_left, 1, 3, border_width=1, border_color=color.gray)
 if barstate.islast and h1Diagnostic != "Off"
-    string heading = "TopG v0.4.7-dev | " + h1Diagnostic + " | Times: " + syminfo.timezone
+    string heading = "TopG v0.4.8-dev | " + h1Diagnostic + " | Times: " + syminfo.timezone
     table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed H1 snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
     string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed H1 snapshot"
-    table.cell(h1Panel, 0, 2, delivery + "\nAudit only: compare identical source close and inputs. No full event-payload transport, taps or entries. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
+    table.cell(h1Panel, 0, 2, delivery + "\nAudit only: retained IDs are the latest batch, not a complete event stream. No full event-payload transport, taps or entries. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
