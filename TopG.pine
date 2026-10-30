@@ -1,7 +1,7 @@
 //@version=6
-indicator("TopG v0.4.8-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
-// Native engine plus opt-in H1 transport audit. UNVERIFIED until chart tests pass.
-// D-006 preserved. H1 audit is diagnostic only; no taps, usage or entries.
+indicator("TopG v0.4.9-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+// Native engine plus selected-source transport audit. UNVERIFIED until chart tests pass.
+// D-006 preserved. One source audit at a time; no combined engine or entries.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -19,7 +19,13 @@ tjlView = input.string("History", "TJL view", options=["Off", "Latest", "History
 keepTJL = input.int(15, "TJL structural pairs retained", minval=2, maxval=20, group="TJL")
 showTJLAudit = input.bool(false, "Show TJL audit (takes audit panel priority)", group="TJL")
 limit = input.int(20000, "Candle storage safety limit", minval=100, maxval=30000, group="Safety")
-h1Diagnostic = input.string("Off", "H1 diagnostic", options=["Off", "Native H1 audit", "Requested H1 on M1"], group="H1 transport diagnostic")
+h1Diagnostic = input.string("Off", "H1 diagnostic", options=["Off", "Native H1 audit", "Requested H1 on M1", "Native selected TF audit", "Requested selected TF on M1"], group="H1 transport diagnostic")
+auditSource = input.string("60", "Selected source timeframe (1D / 240 / 60 / 5)", options=["1D", "240", "60", "5"], group="H1 transport diagnostic")
+// One source at a time. Set Initialization start/direction for that source.
+// Legacy H1 modes remain fixed at 60 regardless of the new source selector.
+string auditTF = h1Diagnostic == "Native selected TF audit" or h1Diagnostic == "Requested selected TF on M1" ? auditSource : "60"
+bool auditRequested = h1Diagnostic == "Requested H1 on M1" or h1Diagnostic == "Requested selected TF on M1"
+bool auditNative = h1Diagnostic == "Native H1 audit" or h1Diagnostic == "Native selected TF audit"
 f_ext(array<float> a, int first, int last, bool highest) =>
     float best = na
     int chosen = na
@@ -635,7 +641,7 @@ var table tjPanel = table.new(position.bottom_left, 2, 7, border_width=1, border
 var table eventPanel = table.new(position.bottom_center, 2, 4, border_width=1, border_color=color.gray)
 bool issScope = timeframe.isminutes and (timeframe.multiplier == 60 or timeframe.multiplier == 5 or timeframe.multiplier == 1)
 bool tjlScope = (timeframe.isdaily and timeframe.multiplier == 1) or (timeframe.isminutes and (timeframe.multiplier == 240 or timeframe.multiplier == 60))
-if barstate.isconfirmed and h1Diagnostic != "Requested H1 on M1"
+if barstate.isconfirmed and not auditRequested
     bool processed = ctx.advanceContext(tops, bots, wh, wl, ts, engineRecords, batch, syminfo.tickerid, timeframe.period, start, limit, keepTJL, issScope, tjlScope, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
     lastBatchSize := array.size(batch)
     if array.size(batch) > 0
@@ -747,12 +753,12 @@ if barstate.isconfirmed and h1Diagnostic != "Requested H1 on M1"
     if tjlScope and ctx.started and not ctx.halted
         if array.size(displayRecords) != array.size(engineRecords)
             runtime.error("TopG event-render TJL retention mismatch")
-if barstate.islast and h1Diagnostic != "Requested H1 on M1"
+if barstate.islast and not auditRequested
     Structure m = ctx.main
     ChochState ch = ctx.choch
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.8-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.9-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native context + event snapshots; no MTF / entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -787,7 +793,7 @@ if barstate.islast and h1Diagnostic != "Requested H1 on M1"
     else
         table.clear(eventPanel, 0, 0, 1, 3)
 
-// v0.4.8: retain latest nonempty H1 batch sequence/IDs; NOT execution integration.
+// v0.4.9: selected D1/H4/H1/M5 source audit; retained batch IDs only.
 // The shared detector above is unchanged. No collections cross the request.
 type H1Audit
     string report = ""
@@ -804,7 +810,7 @@ f_h1_audit(ContextState c, int candles, array<CalcEvent> events) =>
     var int retainedSize = 0
     var string retainedIDs = "None"
     Structure m = c.main
-    string r = (c.halted ? "HALTED" : c.started ? "Started" : "START NOT FOUND: check H1 reference/history") + " | " + c.trend
+    string r = (c.halted ? "HALTED" : c.started ? "Started" : "START NOT FOUND: check selected source reference/history") + " | " + c.trend
     r += "\nFirst source OPEN: " + f_time(c.firstOpen) + "\nLast processed CLOSE: " + f_time(c.lastClose)
     r += "\nCandles / skipped: " + str.tostring(candles) + " / " + str.tostring(c.skipped)
     r += "\nDirection: " + (m.up ? "Upward" : "Downward") + " | Pairs total/direction: " + str.tostring(c.totalPairs) + "/" + str.tostring(m.pairs)
@@ -835,7 +841,7 @@ f_h1_audit(ContextState c, int candles, array<CalcEvent> events) =>
     r += "\nRetained event sequence / IDs:\n" + retainedIDs
     r += "\nLast main event: " + c.lastEvent
     H1Audit.new(report=r, sourceClose=c.lastClose, sequence=c.sequence, batchSize=array.size(events), retainedClose=retainedClose, retainedSize=retainedSize, retainedIDs=retainedIDs)
-f_h1_requested(int reference, bool up, int capacity, int retained) =>
+f_h1_requested(int reference, bool up, int capacity, int retained, string sourceTF, bool sourceISS, bool sourceTJL) =>
     var ContextState c = f_context(up)
     var array<float> bh = array.new_float()
     var array<float> bl = array.new_float()
@@ -844,20 +850,21 @@ f_h1_requested(int reference, bool up, int capacity, int retained) =>
     var array<int> opens = array.new_int()
     var array<TJLRecord> records = array.new<TJLRecord>()
     var array<CalcEvent> events = array.new<CalcEvent>()
-    bool processed = c.advanceContext(bh, bl, highs, lows, opens, records, events, syminfo.tickerid, "60", reference, capacity, retained, true, true, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
+    bool processed = c.advanceContext(bh, bl, highs, lows, opens, records, events, syminfo.tickerid, sourceTF, reference, capacity, retained, sourceISS, sourceTJL, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
     f_h1_audit(c, array.size(opens), events)
-bool h1Native = h1Diagnostic == "Native H1 audit"
-bool h1Requested = h1Diagnostic == "Requested H1 on M1"
-if h1Native and not (timeframe.isminutes and timeframe.multiplier == 60)
-    runtime.error("Native H1 audit requires an H1 chart.")
+bool h1Native = auditNative
+bool h1Requested = auditRequested
+bool auditTFMatches = auditTF == "1D" ? timeframe.isdaily and timeframe.multiplier == 1 : timeframe.isminutes and timeframe.multiplier == int(str.tonumber(auditTF))
+if h1Native and not auditTFMatches
+    runtime.error("Native audit requires the selected source chart: " + auditTF)
 if h1Requested and not (timeframe.isminutes and timeframe.multiplier == 1)
-    runtime.error("Requested H1 audit requires an M1 chart.")
+    runtime.error("Requested source audit requires an M1 chart.")
 // Snapshot fresh scalar fields; offset the WHOLE source snapshot by one bar.
 // Never use barstate.isconfirmed inside security or expose a developing packet.
 H1Audit nativeH1 = h1Native ? f_h1_audit(ctx, array.size(ts), batch) : na
 H1Audit receivedH1 = na
 if h1Requested
-    receivedH1 := request.security(syminfo.tickerid, "60", f_h1_requested(start, initialDir == "Upward", limit, keepTJL)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    receivedH1 := request.security(syminfo.tickerid, auditTF, f_h1_requested(start, initialDir == "Upward", limit, keepTJL, auditTF, auditTF == "60" or auditTF == "5", auditTF != "5")[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
 H1Audit h1Packet = h1Native ? nativeH1[1] : receivedH1
 varip int h1SeenClose = na
 varip int h1SeenSequence = na
@@ -867,7 +874,7 @@ varip string h1Coverage = "Initial sample: prior delivery history not verified"
 if h1Requested and not na(h1Packet)
     if not na(h1Packet.sourceClose) and (na(h1SeenClose) or h1Packet.sourceClose != h1SeenClose)
         if h1Packet.sourceClose > time
-            runtime.error("H1 audit received a future source close.")
+            runtime.error("Source audit received a future source close.")
         if not na(h1SeenSequence)
             h1Coverage := h1Packet.sequence - h1SeenSequence == h1Packet.batchSize ? "Latest transition event count consistent" : "WARNING: intervening event batches may be missing"
         h1SeenClose := h1Packet.sourceClose
@@ -876,8 +883,8 @@ if h1Requested and not na(h1Packet)
         h1ObservedLive := barstate.isrealtime ? timenow : na
 var table h1Panel = table.new(position.top_left, 1, 3, border_width=1, border_color=color.gray)
 if barstate.islast and h1Diagnostic != "Off"
-    string heading = "TopG v0.4.8-dev | " + h1Diagnostic + " | Times: " + syminfo.timezone
+    string heading = "TopG v0.4.9-dev | " + h1Diagnostic + " | Source TF: " + auditTF + " | Times: " + syminfo.timezone
     table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
-    table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed H1 snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
-    string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed H1 snapshot"
-    table.cell(h1Panel, 0, 2, delivery + "\nAudit only: retained IDs are the latest batch, not a complete event stream. No full event-payload transport, taps or entries. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
+    table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed source snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
+    string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed source snapshot"
+    table.cell(h1Panel, 0, 2, delivery + "\nSingle-source audit: use that source candle OPEN/direction in Initialization. Retained IDs are the latest batch, not a complete event stream. No full event-payload transport, taps or entries. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
