@@ -1,7 +1,7 @@
 //@version=6
-indicator("TopG v0.4.6-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
-// Native-only refactor. UNVERIFIED until TradingView regression checks pass.
-// D-006: newest confirmed pair current immediately. No MTF requests or entries.
+indicator("TopG v0.4.7-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+// Native engine plus opt-in H1 transport audit. UNVERIFIED until chart tests pass.
+// D-006 preserved. H1 audit is diagnostic only; no taps, usage or entries.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -19,6 +19,7 @@ tjlView = input.string("History", "TJL view", options=["Off", "Latest", "History
 keepTJL = input.int(15, "TJL structural pairs retained", minval=2, maxval=20, group="TJL")
 showTJLAudit = input.bool(false, "Show TJL audit (takes audit panel priority)", group="TJL")
 limit = input.int(20000, "Candle storage safety limit", minval=100, maxval=30000, group="Safety")
+h1Diagnostic = input.string("Off", "H1 diagnostic", options=["Off", "Native H1 audit", "Requested H1 on M1"], group="H1 transport diagnostic")
 f_ext(array<float> a, int first, int last, bool highest) =>
     float best = na
     int chosen = na
@@ -634,7 +635,7 @@ var table tjPanel = table.new(position.bottom_left, 2, 7, border_width=1, border
 var table eventPanel = table.new(position.bottom_center, 2, 4, border_width=1, border_color=color.gray)
 bool issScope = timeframe.isminutes and (timeframe.multiplier == 60 or timeframe.multiplier == 5 or timeframe.multiplier == 1)
 bool tjlScope = (timeframe.isdaily and timeframe.multiplier == 1) or (timeframe.isminutes and (timeframe.multiplier == 240 or timeframe.multiplier == 60))
-if barstate.isconfirmed
+if barstate.isconfirmed and h1Diagnostic != "Requested H1 on M1"
     bool processed = ctx.advanceContext(tops, bots, wh, wl, ts, engineRecords, batch, syminfo.tickerid, timeframe.period, start, limit, keepTJL, issScope, tjlScope, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
     lastBatchSize := array.size(batch)
     if array.size(batch) > 0
@@ -746,12 +747,12 @@ if barstate.isconfirmed
     if tjlScope and ctx.started and not ctx.halted
         if array.size(displayRecords) != array.size(engineRecords)
             runtime.error("TopG event-render TJL retention mismatch")
-if barstate.islast
+if barstate.islast and h1Diagnostic != "Requested H1 on M1"
     Structure m = ctx.main
     ChochState ch = ctx.choch
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.6-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.4.7-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native context + event snapshots; no MTF / entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -785,3 +786,83 @@ if barstate.islast
             table.cell(eventPanel, 1, row, array.get(ev, row), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
     else
         table.clear(eventPanel, 0, 0, 1, 3)
+
+// v0.4.7 checkpoint: scalar H1 state/event audit, NOT execution integration.
+// The shared detector above is unchanged. No collections cross the request.
+type H1Audit
+    string report = ""
+    int sourceClose = na
+    int sequence = 0
+    int batchSize = 0
+f_h1_audit(ContextState c, int candles, array<CalcEvent> events) =>
+    Structure m = c.main
+    string r = (c.halted ? "HALTED" : c.started ? "Started" : "START NOT FOUND: check H1 reference/history") + " | " + c.trend
+    r += "\nFirst source OPEN: " + f_time(c.firstOpen) + "\nLast processed CLOSE: " + f_time(c.lastClose)
+    r += "\nCandles / skipped: " + str.tostring(candles) + " / " + str.tostring(c.skipped)
+    r += "\nDirection: " + (m.up ? "Upward" : "Downward") + " | Pairs total/direction: " + str.tostring(c.totalPairs) + "/" + str.tostring(m.pairs)
+    r += "\nHigh / low / tentative: " + f_price(m.ch) + " / " + f_price(m.cl) + " / " + f_price(m.tentative)
+    r += "\nCHOCH count / run / side: " + str.tostring(c.choch.count) + " / " + str.tostring(c.choch.run) + " / " + (c.choch.count == 0 ? "None" : c.choch.bullish ? "Bullish" : "Bearish") + " | " + f_time(c.choch.confirmedAt)
+    r += "\nISS: " + c.issStatus + "\nISS count / side / close: " + str.tostring(c.iss.count) + " / " + (c.iss.count == 0 ? "None" : c.iss.bullish ? "Bullish" : "Bearish") + " / " + f_time(c.iss.confirmedAt)
+    r += "\nISS candidates/rejected/outside/cancelled: " + str.tostring(c.iss.candidates) + "/" + str.tostring(c.iss.rejected) + "/" + str.tostring(c.iss.outside) + "/" + str.tostring(c.iss.cancelled)
+    r += "\nTJL sets: " + str.tostring(c.tjl.sets)
+    TJLRecord t = c.tjl.current
+    if not na(t)
+        r += " | Current #" + str.tostring(t.serial) + " | " + (t.up ? "Bullish" : "Bearish") + " | Ready: " + f_time(t.ready)
+        r += "\nHigh origin/zone: " + f_time(t.highOrigin) + " / " + f_price(t.highLower) + " to " + f_price(t.highUpper)
+        r += "\nLow origin/zone: " + f_time(t.lowOrigin) + " / " + f_price(t.lowLower) + " to " + f_price(t.lowUpper)
+        r += "\nTJL point3 origin/price: " + f_time(t.p3) + " / " + f_price(t.p3price)
+    else
+        r += " | No current set"
+    r += "\nCalculation events / this batch: " + str.tostring(c.sequence) + " / " + str.tostring(array.size(events))
+    if array.size(events) > 0
+        for n = 0 to array.size(events) - 1
+            CalcEvent e = array.get(events, n)
+            r += "\n" + str.tostring(e.sequence) + ": " + e.id
+    r += "\nLast main event: " + c.lastEvent
+    H1Audit.new(report=r, sourceClose=c.lastClose, sequence=c.sequence, batchSize=array.size(events))
+f_h1_requested(int reference, bool up, int capacity, int retained) =>
+    var ContextState c = f_context(up)
+    var array<float> bh = array.new_float()
+    var array<float> bl = array.new_float()
+    var array<float> highs = array.new_float()
+    var array<float> lows = array.new_float()
+    var array<int> opens = array.new_int()
+    var array<TJLRecord> records = array.new<TJLRecord>()
+    var array<CalcEvent> events = array.new<CalcEvent>()
+    bool processed = c.advanceContext(bh, bl, highs, lows, opens, records, events, syminfo.tickerid, "60", reference, capacity, retained, true, true, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
+    f_h1_audit(c, array.size(opens), events)
+bool h1Native = h1Diagnostic == "Native H1 audit"
+bool h1Requested = h1Diagnostic == "Requested H1 on M1"
+if h1Native and not (timeframe.isminutes and timeframe.multiplier == 60)
+    runtime.error("Native H1 audit requires an H1 chart.")
+if h1Requested and not (timeframe.isminutes and timeframe.multiplier == 1)
+    runtime.error("Requested H1 audit requires an M1 chart.")
+// Snapshot fresh scalar fields; offset the WHOLE source snapshot by one bar.
+// Never use barstate.isconfirmed inside security or expose a developing packet.
+H1Audit nativeH1 = h1Native ? f_h1_audit(ctx, array.size(ts), batch) : na
+H1Audit receivedH1 = na
+if h1Requested
+    receivedH1 := request.security(syminfo.tickerid, "60", f_h1_requested(start, initialDir == "Upward", limit, keepTJL)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+H1Audit h1Packet = h1Native ? nativeH1[1] : receivedH1
+varip int h1SeenClose = na
+varip int h1SeenSequence = na
+varip int h1ObservedOpen = na
+varip int h1ObservedLive = na
+varip string h1Coverage = "Initial sample: prior delivery history not verified"
+if h1Requested and not na(h1Packet)
+    if not na(h1Packet.sourceClose) and (na(h1SeenClose) or h1Packet.sourceClose != h1SeenClose)
+        if h1Packet.sourceClose > time
+            runtime.error("H1 audit received a future source close.")
+        if not na(h1SeenSequence)
+            h1Coverage := h1Packet.sequence - h1SeenSequence == h1Packet.batchSize ? "Latest transition event count consistent" : "WARNING: intervening event batches may be missing"
+        h1SeenClose := h1Packet.sourceClose
+        h1SeenSequence := h1Packet.sequence
+        h1ObservedOpen := time
+        h1ObservedLive := barstate.isrealtime ? timenow : na
+var table h1Panel = table.new(position.top_left, 1, 3, border_width=1, border_color=color.gray)
+if barstate.islast and h1Diagnostic != "Off"
+    string heading = "TopG v0.4.7-dev | " + h1Diagnostic + " | Times: " + syminfo.timezone
+    table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed H1 snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
+    string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed H1 snapshot"
+    table.cell(h1Panel, 0, 2, delivery + "\nAudit only: compare identical source close and inputs. No full event-payload transport, taps or entries. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
