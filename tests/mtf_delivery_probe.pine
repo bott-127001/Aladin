@@ -1,56 +1,271 @@
 //@version=6
-indicator("TopG MTF Delivery Probe v0.1 - NOT Strategy", overlay=true)
-// Platform diagnostic only. TopG.pine remains the sole strategy implementation.
-// Every requested expression uses the previous source bar with lookahead_on.
-// No barstate.isconfirmed inside requests; no lower-timeframe requests.
-tableTimezone = input.string("America/New_York", "Table timezone (IANA)")
+indicator("TopG MTF Delivery Probe v0.2 - Synthetic Transport", overlay=true)
+// Transport harness only: NOT the TopG strategy or combined structure engine.
+// Replaces v0.1 timing-only probe in this existing file. TopG.pine is unchanged.
+// No taps, signals, orders, manual initialization or detector duplication.
+zone = input.string("America/New_York", "Table timezone (IANA)")
+retain = input.int(200, "Full fixture records retained", minval=8, maxval=1000)
+dropEvery = input.int(0, "Fault injection: drop every Nth source packet (0 off)", minval=0, maxval=100)
 if not (timeframe.isminutes and timeframe.multiplier == 1)
-    runtime.error("Delivery probe: use an M1 chart. This test does not support other operating timeframes.")
-[dOpen, dClose, dPrice] = request.security(syminfo.tickerid, "1D", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
-[h4Open, h4Close, h4Price] = request.security(syminfo.tickerid, "240", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
-[h1Open, h1Close, h1Price] = request.security(syminfo.tickerid, "60", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
-[m5Open, m5Close, m5Price] = request.security(syminfo.tickerid, "5", [time[1], time_close[1], close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
-array<int> sourceOpens = array.from(dOpen, h4Open, h1Open, m5Open)
-array<int> sourceCloses = array.from(dClose, h4Close, h1Close, m5Close)
-array<float> sourcePrices = array.from(dPrice, h4Price, h1Price, m5Price)
-// Intrabar persistence avoids repeatedly replacing a first live observation.
-// These primitive collections are diagnostic state, not trading eligibility.
-varip array<int> seenCloses = array.new_int(4, na)
-varip array<int> observedChartOpens = array.new_int(4, na)
-varip array<int> observedLiveTimes = array.new_int(4, na)
-varip array<string> modes = array.new_string(4, "Waiting for source data")
-for n = 0 to 3
-    int sourceClose = array.get(sourceCloses, n)
-    int seen = array.get(seenCloses, n)
-    if not na(sourceClose)
-        if sourceClose > time
-            runtime.error("Delivery probe: received a source close later than the operating M1 bar open.")
-        if na(seen) or sourceClose != seen
-            if not na(seen) and sourceClose < seen
-                runtime.error("Delivery probe: source close moved backward during this execution.")
-            bool initial = na(seen)
-            array.set(seenCloses, n, sourceClose)
-            array.set(observedChartOpens, n, time)
-            array.set(observedLiveTimes, n, barstate.isrealtime ? timenow : na)
-            array.set(modes, n, initial ? "INITIAL sample" : barstate.isrealtime ? "LIVE observed" : "Historical mapping")
-f_stamp(int stamp) =>
-    na(stamp) ? "N/A" : str.format_time(stamp, "yyyy-MM-dd HH:mm:ss", tableTimezone)
-var table panel = table.new(position.top_right, 8, 7, border_width=1, border_color=color.gray)
+    runtime.error("Transport probe requires an M1 chart")
+// Schema mirrors all 44 scalar fields in TopG v0.4.9-dev CalcEvent.
+type CalcEvent
+    string symbol = ""
+    string tf = ""
+    string id = ""
+    int sequence = 0
+    int kind = 0
+    int serial = 0
+    int sourceOpen = na
+    int sourceClose = na
+    int identifiedAt = na
+    int previousCloseAt = na
+    int o1 = na
+    int o2 = na
+    int o3 = na
+    int o4 = na
+    int o5 = na
+    float p1 = na
+    float p2 = na
+    float p3 = na
+    float p4 = na
+    float p5 = na
+    float h1 = na
+    float l1 = na
+    float h2 = na
+    float l2 = na
+    float h3 = na
+    float l3 = na
+    float h4 = na
+    float l4 = na
+    float h5 = na
+    float l5 = na
+    float barHigh = na
+    float barLow = na
+    float previousClose = na
+    float completion = na
+    float broken = na
+    float lower = na
+    float upper = na
+    bool up = true
+    bool allInside = false
+    bool closeInside = false
+    int reason = 0
+    int made = na
+    int ready = na
+    int ended = na
+
+type Packet
+    string tf = ""
+    int sourceOpen = na
+    int sourceClose = na
+    int sourceIndex = na
+    int sequence = 0
+    int count = 0
+    CalcEvent e0 = na
+    CalcEvent e1 = na
+    CalcEvent e2 = na
+    CalcEvent e3 = na
+    CalcEvent e4 = na
+    CalcEvent e5 = na
+    CalcEvent e6 = na
+    CalcEvent e7 = na
+// Values are synthetic sentinels, NEVER detected structural points or prices.
+f_fixture(string tf, int seq, int slot, int sourceOpen, int sourceClose) =>
+    bool flag = seq % 2 == 0
+    float v = seq + slot * 0.125
+    CalcEvent.new(symbol=syminfo.tickerid, tf=tf, id="FIXTURE|" + tf + "|" + str.tostring(seq), sequence=seq, kind=900 + slot, serial=seq, sourceOpen=sourceOpen, sourceClose=sourceClose, identifiedAt=flag ? sourceOpen : na, previousCloseAt=sourceOpen, o1=sourceOpen - 1, o2=sourceOpen - 2, o3=sourceOpen - 3, o4=sourceOpen - 4, o5=flag ? na : sourceOpen - 5, p1=v + 1, p2=v + 2, p3=v + 3, p4=v + 4, p5=flag ? na : v + 5, h1=v + 11, l1=v - 11, h2=v + 12, l2=v - 12, h3=v + 13, l3=v - 13, h4=v + 14, l4=v - 14, h5=v + 15, l5=v - 15, barHigh=v + 20, barLow=v - 20, previousClose=v - 0.25, completion=v + 0.25, broken=v + 0.5, lower=v - 30, upper=v + 30, up=flag, allInside=not flag, closeInside=slot % 2 == 0, reason=slot, made=sourceOpen, ready=sourceClose, ended=flag ? na : sourceClose)
+f_source(string tf) =>
+    var int sequence = 0
+    int n = bar_index % 3 == 0 ? 0 : bar_index % 3 == 1 ? 2 : 8
+    Packet p = Packet.new(tf=tf, sourceOpen=time, sourceClose=time_close, sourceIndex=bar_index, count=n)
+    if n > 0
+        for i = 0 to n - 1
+            sequence += 1
+            CalcEvent e = f_fixture(tf, sequence, i, time, time_close)
+            switch i
+                0 => p.e0 := e
+                1 => p.e1 := e
+                2 => p.e2 := e
+                3 => p.e3 := e
+                4 => p.e4 := e
+                5 => p.e5 := e
+                6 => p.e6 := e
+                7 => p.e7 := e
+    p.sequence := sequence
+    p
+f_slot(Packet p, int i) =>
+    switch i
+        0 => p.e0
+        1 => p.e1
+        2 => p.e2
+        3 => p.e3
+        4 => p.e4
+        5 => p.e5
+        6 => p.e6
+        => p.e7
+f_i(int a, int b) =>
+    na(a) ? na(b) : na(b) ? false : a == b
+f_f(float a, float b) =>
+    na(a) ? na(b) : na(b) ? false : a == b
+f_equal(CalcEvent a, CalcEvent b) =>
+    bool same = true
+    same := same and a.symbol == b.symbol
+    same := same and a.tf == b.tf
+    same := same and a.id == b.id
+    same := same and f_i(a.sequence, b.sequence)
+    same := same and f_i(a.kind, b.kind)
+    same := same and f_i(a.serial, b.serial)
+    same := same and f_i(a.sourceOpen, b.sourceOpen)
+    same := same and f_i(a.sourceClose, b.sourceClose)
+    same := same and f_i(a.identifiedAt, b.identifiedAt)
+    same := same and f_i(a.previousCloseAt, b.previousCloseAt)
+    same := same and f_i(a.o1, b.o1)
+    same := same and f_i(a.o2, b.o2)
+    same := same and f_i(a.o3, b.o3)
+    same := same and f_i(a.o4, b.o4)
+    same := same and f_i(a.o5, b.o5)
+    same := same and f_f(a.p1, b.p1)
+    same := same and f_f(a.p2, b.p2)
+    same := same and f_f(a.p3, b.p3)
+    same := same and f_f(a.p4, b.p4)
+    same := same and f_f(a.p5, b.p5)
+    same := same and f_f(a.h1, b.h1)
+    same := same and f_f(a.l1, b.l1)
+    same := same and f_f(a.h2, b.h2)
+    same := same and f_f(a.l2, b.l2)
+    same := same and f_f(a.h3, b.h3)
+    same := same and f_f(a.l3, b.l3)
+    same := same and f_f(a.h4, b.h4)
+    same := same and f_f(a.l4, b.l4)
+    same := same and f_f(a.h5, b.h5)
+    same := same and f_f(a.l5, b.l5)
+    same := same and f_f(a.barHigh, b.barHigh)
+    same := same and f_f(a.barLow, b.barLow)
+    same := same and f_f(a.previousClose, b.previousClose)
+    same := same and f_f(a.completion, b.completion)
+    same := same and f_f(a.broken, b.broken)
+    same := same and f_f(a.lower, b.lower)
+    same := same and f_f(a.upper, b.upper)
+    same := same and a.up == b.up
+    same := same and a.allInside == b.allInside
+    same := same and a.closeInside == b.closeInside
+    same := same and f_i(a.reason, b.reason)
+    same := same and f_i(a.made, b.made)
+    same := same and f_i(a.ready, b.ready)
+    same := same and f_i(a.ended, b.ended)
+    same
+type Receiver
+    int observedIndex = na
+    int acceptedIndex = na
+    int sequence = 0
+    int accepted = 0
+    int missingEvents = 0
+    int missingBars = 0
+    int initialUnseen = 0
+    int injectedDrops = 0
+    int latestClose = na
+    int committedAt = na
+    int lastCount = 0
+    int emptyBatches = 0
+    int twoBatches = 0
+    int eightBatches = 0
+method receive(Receiver r, Packet p, string tf, array<CalcEvent> log) =>
+    if not na(p)
+        if p.tf != tf or p.sourceClose > (tf == "1" ? time_close : time)
+            runtime.error("Probe: packet context or source-close cutoff mismatch")
+        if na(r.observedIndex) or p.sourceIndex != r.observedIndex
+            if not na(r.observedIndex) and p.sourceIndex < r.observedIndex
+                runtime.error("Probe: source packet index moved backwards")
+            r.observedIndex := p.sourceIndex
+            if dropEvery > 0 and p.sourceIndex % dropEvery == 0
+                r.injectedDrops += 1
+            else
+                if p.count < 0 or p.count > 8
+                    runtime.error("Probe: packet overflow; truncation is forbidden")
+                if na(r.acceptedIndex)
+                    r.initialUnseen := p.sequence - p.count
+                else
+                    int missing = p.sequence - r.sequence - p.count
+                    if missing < 0
+                        runtime.error("Probe: event sequence regression")
+                    r.missingEvents += missing
+                    r.missingBars += p.sourceIndex - r.acceptedIndex - 1
+                for i = 0 to 7
+                    CalcEvent e = f_slot(p, i)
+                    if i < p.count
+                        if na(e)
+                            runtime.error("Probe: missing occupied event slot")
+                        CalcEvent expected = f_fixture(tf, p.sequence - p.count + i + 1, i, p.sourceOpen, p.sourceClose)
+                        if not f_equal(e, expected)
+                            runtime.error("Probe: one or more of 44 payload fields differ")
+                        array.push(log, e.copy())
+                        r.accepted += 1
+                    else if not na(e)
+                        runtime.error("Probe: nonempty unused event slot")
+                r.emptyBatches += p.count == 0 ? 1 : 0
+                r.twoBatches += p.count == 2 ? 1 : 0
+                r.eightBatches += p.count == 8 ? 1 : 0
+                r.acceptedIndex := p.sourceIndex
+                r.sequence := p.sequence
+                r.latestClose := p.sourceClose
+                r.committedAt := time_close
+                r.lastCount := p.count
+    true
+// No source arrays escape. Offset the WHOLE HTF packet; M1 stays native.
+Packet pd = request.security(syminfo.tickerid, "1D", f_source("1D")[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+Packet p4 = request.security(syminfo.tickerid, "240", f_source("240")[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+Packet p1 = request.security(syminfo.tickerid, "60", f_source("60")[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+Packet p5 = request.security(syminfo.tickerid, "5", f_source("5")[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+var Receiver rd = Receiver.new()
+var Receiver r4 = Receiver.new()
+var Receiver r1 = Receiver.new()
+var Receiver r5 = Receiver.new()
+var Receiver rm = Receiver.new()
+var array<CalcEvent> log = array.new<CalcEvent>()
+var int omitted = 0
+// Intrabar observations are diagnostics ONLY; never use varip for the event log.
+varip array<int> seen = array.new_int(5, na)
+varip array<int> observedOpen = array.new_int(5, na)
+varip array<int> liveTime = array.new_int(5, na)
+varip array<string> modes = array.new_string(5, "Waiting")
+array<int> closes = array.from(na(pd) ? int(na) : pd.sourceClose, na(p4) ? int(na) : p4.sourceClose, na(p1) ? int(na) : p1.sourceClose, na(p5) ? int(na) : p5.sourceClose, barstate.isconfirmed ? time_close : int(na))
+for i = 0 to 4
+    int stamp = array.get(closes, i)
+    int old = array.get(seen, i)
+    if not na(stamp) and (na(old) or stamp != old)
+        array.set(seen, i, stamp)
+        array.set(observedOpen, i, time)
+        array.set(liveTime, i, barstate.isrealtime ? timenow : na)
+        array.set(modes, i, na(old) ? "INITIAL" : barstate.isrealtime ? "LIVE observed" : "Historical mapping")
+if barstate.isconfirmed
+    Packet pm = f_source("1")
+    rd.receive(pd, "1D", log)
+    r4.receive(p4, "240", log)
+    r1.receive(p1, "60", log)
+    r5.receive(p5, "5", log)
+    rm.receive(pm, "1", log)
+    while array.size(log) > retain
+        CalcEvent removed = array.shift(log)
+        omitted += 1
+f_stamp(int t) =>
+    na(t) ? "N/A" : str.format_time(t, "yyyy-MM-dd HH:mm:ss", zone)
+f_row(table panel, int i, string tf, Receiver r) =>
+    array<string> values = array.from(tf, f_stamp(r.latestClose), f_stamp(array.get(observedOpen, i)), f_stamp(array.get(liveTime, i)), f_stamp(r.committedAt), str.tostring(r.sequence) + "/" + str.tostring(r.accepted), str.tostring(r.missingEvents) + "/" + str.tostring(r.missingBars), str.tostring(r.initialUnseen), str.tostring(r.emptyBatches) + "/" + str.tostring(r.twoBatches) + "/" + str.tostring(r.eightBatches), array.get(modes, i) + " | drops " + str.tostring(r.injectedDrops))
+    for col = 0 to 9
+        table.cell(panel, col, i + 2, array.get(values, col), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+var table panel = table.new(position.top_right, 10, 8, border_width=1)
 if barstate.isfirst
-    table.merge_cells(panel, 0, 0, 7, 0)
-    table.merge_cells(panel, 0, 6, 7, 6)
+    table.merge_cells(panel, 0, 0, 9, 0)
+    table.merge_cells(panel, 0, 7, 9, 7)
 if barstate.islast
-    table.cell(panel, 0, 0, "TopG MTF delivery probe | " + syminfo.tickerid + " | Operating M1 | Times: " + tableTimezone, bgcolor=color.white, text_color=color.black, text_size=size.small)
-    array<string> headers = array.from("Source", "Source OPEN", "Source CLOSE", "Source close price", "First observed M1 OPEN", "First observed LIVE time", "M1-open gap (minutes)", "Observation type")
-    array<string> names = array.from("D1", "H4", "H1", "M5")
-    for col = 0 to 7
+    table.cell(panel, 0, 0, "TopG transport probe v0.2 | SYNTHETIC 44-field fixtures, NOT strategy | " + syminfo.tickerid + " | " + zone, bgcolor=color.white, text_color=color.black, text_size=size.small)
+    array<string> headers = array.from("Source", "Accepted source CLOSE", "First observed M1 OPEN", "First observed LIVE", "Committed M1 CLOSE", "Source seq/accepted", "Missing events/bars", "Initial unseen events", "Batches 0/2/8", "Observation / injected drops")
+    for col = 0 to 9
         table.cell(panel, col, 1, array.get(headers, col), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
-    for n = 0 to 3
-        int observed = array.get(observedChartOpens, n)
-        int sourceClose = array.get(sourceCloses, n)
-        string gap = na(observed) or na(sourceClose) ? "N/A" : str.tostring((observed - sourceClose) / 60000.0, "#.###")
-        float price = array.get(sourcePrices, n)
-        array<string> values = array.from(array.get(names, n), f_stamp(array.get(sourceOpens, n)), f_stamp(sourceClose), na(price) ? "N/A" : str.tostring(price, format.mintick), f_stamp(observed), f_stamp(array.get(observedLiveTimes, n)), gap, array.get(modes, n))
-        for col = 0 to 7
-            table.cell(panel, col, n + 2, array.get(values, col), bgcolor=color.white, text_color=color.black, text_size=size.tiny)
-    table.cell(panel, 0, 6, "Diagnostic only: no TopG detection or entries. INITIAL samples do not prove first availability. N/A LIVE time is normal for historical mapping.", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+    f_row(panel, 0, "D1", rd)
+    f_row(panel, 1, "H4", r4)
+    f_row(panel, 2, "H1", r1)
+    f_row(panel, 3, "M5", r5)
+    f_row(panel, 4, "M1", rm)
+    table.cell(panel, 0, 7, "Full records retained/omitted: " + str.tostring(array.size(log)) + "/" + str.tostring(omitted) + ". No entry competition or global event-time ordering. HTF arrives in following interval; log commits at M1 close. INITIAL is not first availability. Pine compile/runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
