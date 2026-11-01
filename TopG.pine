@@ -1,7 +1,8 @@
 //@version=6
-indicator("TopG v0.4.9-dev - Native Context Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250)
+indicator("TopG v0.5.0-dev - Combined Real Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250, calc_bars_count=1200)
 // Native engine plus selected-source transport audit. UNVERIFIED until chart tests pass.
-// D-006 preserved. One source audit at a time; no combined engine or entries.
+// D-006 preserved. Opt-in combined audit; no taps, usage or entries.
+// LIMITED COVERAGE: max 1200 chart bars in all modes; missing starts are never replaced.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -26,6 +27,25 @@ auditSource = input.string("60", "Selected source timeframe (1D / 240 / 60 / 5)"
 string auditTF = h1Diagnostic == "Native selected TF audit" or h1Diagnostic == "Requested selected TF on M1" ? auditSource : "60"
 bool auditRequested = h1Diagnostic == "Requested H1 on M1" or h1Diagnostic == "Requested selected TF on M1"
 bool auditNative = h1Diagnostic == "Native H1 audit" or h1Diagnostic == "Native selected TF audit"
+// v0.5.0: combined real-event audit. Manual initialization remains independent.
+combined = input.bool(false, "Combined real-event audit (M1 only)", group="Combined MTF")
+sourceBars = input.int(300, "Requested source calculation bars", minval=50, maxval=3000, group="Combined MTF")
+keepWire = input.int(64, "Full real-event records retained", minval=8, maxval=256, group="Combined MTF")
+inspectTF = input.string("5", "Detailed combined source", options=["1D", "240", "60", "5", "1"], group="Combined MTF")
+inspectRecord = input.int(0, "Record offset from newest retained (all sources)", minval=0, maxval=255, group="Combined MTF")
+showPayload = input.bool(false, "Show inspected full event payload", group="Combined MTF")
+startD = input.time(timestamp("01 Oct 2026 00:00 +0530"), "D1 source OPEN", group="Combined D1 initialization")
+upD = input.bool(true, "D1 starts upward (false = downward)", group="Combined D1 initialization")
+start4 = input.time(timestamp("01 Oct 2026 00:00 +0530"), "H4 source OPEN", group="Combined H4 initialization")
+up4 = input.bool(true, "H4 starts upward (false = downward)", group="Combined H4 initialization")
+start1 = input.time(timestamp("01 Oct 2026 00:00 +0530"), "H1 source OPEN", group="Combined H1 initialization")
+up1 = input.bool(true, "H1 starts upward (false = downward)", group="Combined H1 initialization")
+start5 = input.time(timestamp("01 Oct 2026 00:00 +0530"), "M5 source OPEN", group="Combined M5 initialization")
+up5 = input.bool(true, "M5 starts upward (false = downward)", group="Combined M5 initialization")
+startM = input.time(timestamp("01 Oct 2026 00:00 +0530"), "M1 source OPEN", group="Combined M1 initialization")
+upM = input.bool(true, "M1 starts upward (false = downward)", group="Combined M1 initialization")
+if combined and (not (timeframe.isminutes and timeframe.multiplier == 1) or h1Diagnostic != "Off")
+    runtime.error("Combined audit requires M1 and H1 diagnostic Off")
 f_ext(array<float> a, int first, int last, bool highest) =>
     float best = na
     int chosen = na
@@ -641,7 +661,7 @@ var table tjPanel = table.new(position.bottom_left, 2, 7, border_width=1, border
 var table eventPanel = table.new(position.bottom_center, 2, 4, border_width=1, border_color=color.gray)
 bool issScope = timeframe.isminutes and (timeframe.multiplier == 60 or timeframe.multiplier == 5 or timeframe.multiplier == 1)
 bool tjlScope = (timeframe.isdaily and timeframe.multiplier == 1) or (timeframe.isminutes and (timeframe.multiplier == 240 or timeframe.multiplier == 60))
-if barstate.isconfirmed and not auditRequested
+if barstate.isconfirmed and not auditRequested and not combined
     bool processed = ctx.advanceContext(tops, bots, wh, wl, ts, engineRecords, batch, syminfo.tickerid, timeframe.period, start, limit, keepTJL, issScope, tjlScope, open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
     lastBatchSize := array.size(batch)
     if array.size(batch) > 0
@@ -753,13 +773,13 @@ if barstate.isconfirmed and not auditRequested
     if tjlScope and ctx.started and not ctx.halted
         if array.size(displayRecords) != array.size(engineRecords)
             runtime.error("TopG event-render TJL retention mismatch")
-if barstate.islast and not auditRequested
+if barstate.islast and not auditRequested and not combined
     Structure m = ctx.main
     ChochState ch = ctx.choch
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.4.9-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
-    array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native context + event snapshots; no MTF / entries")
+    array<string> keys = array.from("TopG v0.5.0-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native mode; LIMITED 1200 chart bars. Combined audit opt-in; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
         table.cell(panel, 1, row, array.get(vals, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -883,8 +903,199 @@ if h1Requested and not na(h1Packet)
         h1ObservedLive := barstate.isrealtime ? timenow : na
 var table h1Panel = table.new(position.top_left, 1, 3, border_width=1, border_color=color.gray)
 if barstate.islast and h1Diagnostic != "Off"
-    string heading = "TopG v0.4.9-dev | " + h1Diagnostic + " | Source TF: " + auditTF + " | Times: " + syminfo.timezone
+    string heading = "TopG v0.5.0-dev | " + h1Diagnostic + " | Source TF: " + auditTF + " | Times: " + syminfo.timezone
     table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed source snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
     string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed source snapshot"
-    table.cell(h1Panel, 0, 2, delivery + "\nSingle-source audit: use that source candle OPEN/direction in Initialization. Retained IDs are the latest batch, not a complete event stream. No full event-payload transport, taps or entries. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
+    table.cell(h1Panel, 0, 2, delivery + "\nSingle-source audit: use that source candle OPEN/direction in Initialization. Retained IDs are the latest batch, not a complete event stream. This single-source panel displays IDs only; combined mode transports full payloads. No taps or entries. LIMITED 1200 chart bars. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
+
+
+// Complete scalar wire codec. Percent escaping keeps string fields unambiguous.
+// Column order is exactly the existing 44-field CalcEvent declaration.
+f_ws(string v) =>
+    str.replace_all(str.replace_all(str.replace_all(v, "%", "%25"), ",", "%2C"), ";", "%3B")
+f_wus(string v) =>
+    str.replace_all(str.replace_all(str.replace_all(v, "%3B", ";"), "%2C", ","), "%25", "%")
+f_wi(int v) =>
+    na(v) ? "~" : str.tostring(v)
+f_wf(float v) =>
+    string s = na(v) ? "~" : str.tostring(v, "#.################")
+    if not na(v) and str.tonumber(s) != v
+        runtime.error("Event float failed numeric round-trip")
+    s
+f_wb(bool v) =>
+    v ? "1" : "0"
+f_wn(array<string> a, int i) =>
+    string s = array.get(a, i)
+    float n = s == "~" ? na : str.tonumber(s)
+    if s != "~" and na(n)
+        runtime.error("Invalid numeric wire field")
+    n
+f_wint(array<string> a, int i) =>
+    float n = f_wn(a, i)
+    if not na(n)
+        if math.abs(n) > 9007199254740991 or n != int(n)
+            runtime.error("Invalid or inexact integer wire field")
+    int(n)
+f_wbool(array<string> a, int i) =>
+    string s = array.get(a, i)
+    if s != "0" and s != "1"
+        runtime.error("Invalid boolean wire field")
+    s == "1"
+f_wire(CalcEvent e) =>
+    array<string> a = array.from(f_ws(e.symbol), f_ws(e.tf), f_ws(e.id), f_wi(e.sequence), f_wi(e.kind), f_wi(e.serial), f_wi(e.sourceOpen), f_wi(e.sourceClose), f_wi(e.identifiedAt), f_wi(e.previousCloseAt), f_wi(e.o1), f_wi(e.o2), f_wi(e.o3), f_wi(e.o4), f_wi(e.o5), f_wf(e.p1), f_wf(e.p2), f_wf(e.p3), f_wf(e.p4), f_wf(e.p5), f_wf(e.h1), f_wf(e.l1), f_wf(e.h2), f_wf(e.l2), f_wf(e.h3), f_wf(e.l3), f_wf(e.h4), f_wf(e.l4), f_wf(e.h5), f_wf(e.l5), f_wf(e.barHigh), f_wf(e.barLow), f_wf(e.previousClose), f_wf(e.completion), f_wf(e.broken), f_wf(e.lower), f_wf(e.upper), f_wb(e.up), f_wb(e.allInside), f_wb(e.closeInside), f_wi(e.reason), f_wi(e.made), f_wi(e.ready), f_wi(e.ended))
+    array.join(a, ",")
+f_unwire(string row) =>
+    array<string> a = str.split(row, ",")
+    if array.size(a) != 44
+        runtime.error("Wire record must contain all 44 event fields")
+    CalcEvent.new(symbol=f_wus(array.get(a, 0)), tf=f_wus(array.get(a, 1)), id=f_wus(array.get(a, 2)), sequence=f_wint(a, 3), kind=f_wint(a, 4), serial=f_wint(a, 5), sourceOpen=f_wint(a, 6), sourceClose=f_wint(a, 7), identifiedAt=f_wint(a, 8), previousCloseAt=f_wint(a, 9), o1=f_wint(a, 10), o2=f_wint(a, 11), o3=f_wint(a, 12), o4=f_wint(a, 13), o5=f_wint(a, 14), p1=f_wn(a, 15), p2=f_wn(a, 16), p3=f_wn(a, 17), p4=f_wn(a, 18), p5=f_wn(a, 19), h1=f_wn(a, 20), l1=f_wn(a, 21), h2=f_wn(a, 22), l2=f_wn(a, 23), h3=f_wn(a, 24), l3=f_wn(a, 25), h4=f_wn(a, 26), l4=f_wn(a, 27), h5=f_wn(a, 28), l5=f_wn(a, 29), barHigh=f_wn(a, 30), barLow=f_wn(a, 31), previousClose=f_wn(a, 32), completion=f_wn(a, 33), broken=f_wn(a, 34), lower=f_wn(a, 35), upper=f_wn(a, 36), up=f_wbool(a, 37), allInside=f_wbool(a, 38), closeInside=f_wbool(a, 39), reason=f_wint(a, 40), made=f_wint(a, 41), ready=f_wint(a, 42), ended=f_wint(a, 43))
+f_wire_batch(array<CalcEvent> events) =>
+    string wire = ""
+    if array.size(events) > 0
+        for i = 0 to array.size(events) - 1
+            CalcEvent e = array.get(events, i)
+            string row = f_wire(e)
+            CalcEvent decoded = f_unwire(row)
+            if f_wire(decoded) != row
+                runtime.error("Event codec failed canonical round-trip")
+            wire += (i == 0 ? "" : ";") + row
+    if str.length(wire) > 32768
+        runtime.error("Event wire packet overflow: no truncation allowed")
+    wire
+
+// Independent real detector contexts. Only primitive tuples leave requests.
+f_mtf_build(string tf, int reference, bool up) =>
+    var ContextState c = f_context(up)
+    var array<float> bh = array.new_float()
+    var array<float> bl = array.new_float()
+    var array<float> highs = array.new_float()
+    var array<float> lows = array.new_float()
+    var array<int> opens = array.new_int()
+    var array<TJLRecord> records = array.new<TJLRecord>()
+    var array<CalcEvent> events = array.new<CalcEvent>()
+    var int availableFrom = time
+    bool ok = c.advanceContext(bh, bl, highs, lows, opens, records, events, syminfo.tickerid, tf, reference, limit, keepTJL, tf == "60" or tf == "5" or tf == "1", tf == "1D" or tf == "240" or tf == "60", open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
+    H1Audit a = f_h1_audit(c, array.size(opens), events)
+    string report = a.report + "\nRequested start OPEN: " + f_time(reference) + " | Available source history from: " + f_time(availableFrom)
+    [time_close, time, bar_index, c.sequence, array.size(events), f_wire_batch(events), report]
+f_mtf_prior(string tf, int reference, bool up) =>
+    [tc, op, ix, seq, n, wire, report] = f_mtf_build(tf, reference, up)
+    [tc[1], op[1], ix[1], seq[1], n[1], wire[1], report[1]]
+type MTFReceiver
+    int sourceClose = na
+    int sourceIndex = na
+    int sequence = 0
+    int accepted = 0
+    int initialUnseen = 0
+    int missingEvents = 0
+    int missingBars = 0
+    int deliveredClose = na
+    int retainedClose = na
+    int retainedSize = 0
+    string retainedIDs = "None"
+    string report = "Waiting for confirmed source packet"
+method consume(MTFReceiver r, string tf, int tc, int op, int ix, int seq, int n, string wire, string report, array<string> history) =>
+    // Refresh status even if a detector has halted or has not found its start.
+    if not na(report)
+        r.report := report
+    if not na(tc) and (na(r.sourceClose) or tc != r.sourceClose)
+        if na(op) or na(ix) or na(seq) or na(n) or tc > (tf == "1" ? time_close : time)
+            runtime.error("Invalid real-event source metadata")
+        if not na(r.sourceClose) and tc < r.sourceClose
+            runtime.error("Real-event source close moved backwards")
+        if n < 0 or seq < n
+            runtime.error("Invalid real-event sequence or batch size")
+        if na(r.sourceIndex)
+            r.initialUnseen := seq - n
+        else
+            int gap = seq - r.sequence - n
+            if ix <= r.sourceIndex or gap < 0
+                runtime.error("Real-event delivery sequence regressed")
+            r.missingEvents += gap
+            r.missingBars += ix - r.sourceIndex - 1
+        if n == 0
+            if wire != ""
+                runtime.error("Empty real-event batch contains payload")
+        else
+            array<string> rows = str.split(wire, ";")
+            if array.size(rows) != n
+                runtime.error("Real-event transport lost or added rows")
+            string ids = ""
+            for i = 0 to n - 1
+                string row = array.get(rows, i)
+                CalcEvent e = f_unwire(row)
+                if e.symbol != syminfo.tickerid or e.tf != tf or e.sourceOpen != op or e.sourceClose != tc or e.sequence != seq - n + i + 1
+                    runtime.error("Real-event identity or timestamp mismatch")
+                if f_wire(e) != row
+                    runtime.error("Received event changed during decoding")
+                array.push(history, row)
+                if array.size(history) > keepWire
+                    string omitted = array.shift(history)
+                r.accepted += 1
+                ids += (i == 0 ? "" : "\n") + f_wi(e.sequence) + ": " + e.id
+            r.retainedIDs := ids
+            r.retainedClose := tc
+            r.retainedSize := n
+        r.sourceClose := tc
+        r.sourceIndex := ix
+        r.sequence := seq
+        r.deliveredClose := time_close
+    true
+f_mtf_row(table t, int row, string tf, MTFReceiver r) =>
+    array<string> statusLines = str.split(r.report, "\n")
+    string info = array.get(statusLines, 0) + "\nSource CLOSE " + f_time(r.sourceClose) + " | Delivered M1 CLOSE " + f_time(r.deliveredClose)
+    info += "\nSeq/accepted " + f_wi(r.sequence) + "/" + f_wi(r.accepted) + " | Initial unseen " + f_wi(r.initialUnseen) + " | Missing events/bars " + f_wi(r.missingEvents) + "/" + f_wi(r.missingBars)
+    table.cell(t, 0, row, tf, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+    table.cell(t, 1, row, info, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+var MTFReceiver rd = MTFReceiver.new()
+var MTFReceiver r4 = MTFReceiver.new()
+var MTFReceiver r1 = MTFReceiver.new()
+var MTFReceiver r5 = MTFReceiver.new()
+var MTFReceiver rm = MTFReceiver.new()
+var array<string> mtfHistory = array.new_string()
+var int firstM1Open = na
+var table mtfPanel = table.new(position.top_left, 2, 7, border_width=1)
+var table mtfDetail = table.new(position.bottom_right, 1, 1, border_width=1)
+if combined
+    [dc, do_, di, ds, dn, dw, dr] = request.security(syminfo.tickerid, "1D", f_mtf_prior("1D", startD, upD), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c4, o4, i4, s4, n4, w4, t4] = request.security(syminfo.tickerid, "240", f_mtf_prior("240", start4, up4), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c1, o1, i1, s1, n1, w1, t1] = request.security(syminfo.tickerid, "60", f_mtf_prior("60", start1, up1), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c5, o5, i5, s5, n5, w5, t5] = request.security(syminfo.tickerid, "5", f_mtf_prior("5", start5, up5), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    if barstate.isconfirmed
+        if na(firstM1Open)
+            firstM1Open := time
+        [mc, mo, mi, ms, mn, mw, mr] = f_mtf_build("1", startM, upM)
+        rd.consume("1D", dc, do_, di, ds, dn, dw, dr, mtfHistory)
+        r4.consume("240", c4, o4, i4, s4, n4, w4, t4, mtfHistory)
+        r1.consume("60", c1, o1, i1, s1, n1, w1, t1, mtfHistory)
+        r5.consume("5", c5, o5, i5, s5, n5, w5, t5, mtfHistory)
+        rm.consume("1", mc, mo, mi, ms, mn, mw, mr, mtfHistory)
+    if barstate.islast
+        table.cell(mtfPanel, 0, 0, "TopG v0.5.0-dev", bgcolor=color.white, text_color=color.black)
+        table.cell(mtfPanel, 1, 0, "Combined REAL-event audit / UNVERIFIED", bgcolor=color.white, text_color=color.black)
+        f_mtf_row(mtfPanel, 1, "D1", rd)
+        f_mtf_row(mtfPanel, 2, "H4", r4)
+        f_mtf_row(mtfPanel, 3, "H1", r1)
+        f_mtf_row(mtfPanel, 4, "M5", r5)
+        f_mtf_row(mtfPanel, 5, "M1", rm)
+        int accepted = rd.accepted + r4.accepted + r1.accepted + r5.accepted + rm.accepted
+        string coverage = "LIMITED: max 1200 chart bars in ALL modes; requested source cap " + f_wi(sourceBars) + " + 2. First committed M1 OPEN " + f_time(firstM1Open)
+        coverage += "\nFull rows retained/omitted " + f_wi(array.size(mtfHistory)) + "/" + f_wi(accepted - array.size(mtfHistory)) + ". Initial unseen is NOT complete event coverage. Starts are never auto-corrected."
+        coverage += "\nD-006 preserved; start dependence unresolved. HTF packets commit at the following M1 bar close, or later after session gaps. No global event-time ordering, taps, usage, entries or alerts. Native equivalence/live/replay/reload UNVERIFIED."
+        table.cell(mtfPanel, 0, 6, "Coverage/timing", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+        table.cell(mtfPanel, 1, 6, coverage, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+        MTFReceiver chosen = inspectTF == "1D" ? rd : inspectTF == "240" ? r4 : inspectTF == "60" ? r1 : inspectTF == "5" ? r5 : rm
+        string detail = inspectTF + " | " + chosen.report + "\nDelivered M1 CLOSE " + f_time(chosen.deliveredClose)
+        detail += "\nRetained nonempty batch CLOSE/size " + f_time(chosen.retainedClose) + "/" + f_wi(chosen.retainedSize) + "\n" + chosen.retainedIDs
+        if showPayload
+            int at = array.size(mtfHistory) - 1 - inspectRecord
+            if at >= 0
+                array<string> names = str.split("symbol,tf,id,sequence,kind,serial,sourceOpen,sourceClose,identifiedAt,previousCloseAt,o1,o2,o3,o4,o5,p1,p2,p3,p4,p5,h1,l1,h2,l2,h3,l3,h4,l4,h5,l5,barHigh,barLow,previousClose,completion,broken,lower,upper,up,allInside,closeInside,reason,made,ready,ended", ",")
+                array<string> values = str.split(array.get(mtfHistory, at), ",")
+                detail += "\nInspected full record (delivery order, not global event-time order):"
+                for i = 0 to 43
+                    detail += "\n" + array.get(names, i) + ": " + (i < 3 ? f_wus(array.get(values, i)) : array.get(values, i))
+            else
+                detail += "\nInspected record is outside retained coverage"
+        table.cell(mtfDetail, 0, 0, detail, bgcolor=color.white, text_color=color.black, text_size=size.tiny, text_halign=text.align_left)
