@@ -1,5 +1,5 @@
 //@version=6
-indicator("TopG v0.5.0-dev - Combined Real Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250, calc_bars_count=1200)
+indicator("TopG v0.5.1-dev - Combined Real Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250, calc_bars_count=1200)
 // Native engine plus selected-source transport audit. UNVERIFIED until chart tests pass.
 // D-006 preserved. Opt-in combined audit; no taps, usage or entries.
 // LIMITED COVERAGE: max 1200 chart bars in all modes; missing starts are never replaced.
@@ -27,7 +27,7 @@ auditSource = input.string("60", "Selected source timeframe (1D / 240 / 60 / 5)"
 string auditTF = h1Diagnostic == "Native selected TF audit" or h1Diagnostic == "Requested selected TF on M1" ? auditSource : "60"
 bool auditRequested = h1Diagnostic == "Requested H1 on M1" or h1Diagnostic == "Requested selected TF on M1"
 bool auditNative = h1Diagnostic == "Native H1 audit" or h1Diagnostic == "Native selected TF audit"
-// v0.5.0: combined real-event audit. Manual initialization remains independent.
+// v0.5.1: combined real-event audit. Manual initialization remains independent.
 combined = input.bool(false, "Combined real-event audit (M1 only)", group="Combined MTF")
 sourceBars = input.int(300, "Requested source calculation bars", minval=50, maxval=3000, group="Combined MTF")
 keepWire = input.int(64, "Full real-event records retained", minval=8, maxval=256, group="Combined MTF")
@@ -778,7 +778,7 @@ if barstate.islast and not auditRequested and not combined
     ChochState ch = ctx.choch
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
-    array<string> keys = array.from("TopG v0.5.0-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
+    array<string> keys = array.from("TopG v0.5.1-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
     array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native mode; LIMITED 1200 chart bars. Combined audit opt-in; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -903,7 +903,7 @@ if h1Requested and not na(h1Packet)
         h1ObservedLive := barstate.isrealtime ? timenow : na
 var table h1Panel = table.new(position.top_left, 1, 3, border_width=1, border_color=color.gray)
 if barstate.islast and h1Diagnostic != "Off"
-    string heading = "TopG v0.5.0-dev | " + h1Diagnostic + " | Source TF: " + auditTF + " | Times: " + syminfo.timezone
+    string heading = "TopG v0.5.1-dev | " + h1Diagnostic + " | Source TF: " + auditTF + " | Times: " + syminfo.timezone
     table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed source snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
     string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed source snapshot"
@@ -1055,8 +1055,8 @@ var MTFReceiver r5 = MTFReceiver.new()
 var MTFReceiver rm = MTFReceiver.new()
 var array<string> mtfHistory = array.new_string()
 var int firstM1Open = na
-var table mtfPanel = table.new(position.top_left, 2, 7, border_width=1)
-var table mtfDetail = table.new(position.bottom_right, 1, 1, border_width=1)
+var table mtfPanel = combined ? table.new(position.top_left, 2, 7, border_width=1) : na
+var table mtfDetail = combined ? table.new(position.bottom_right, 1, 1, border_width=1) : na
 if combined
     [dc, do_, di, ds, dn, dw, dr] = request.security(syminfo.tickerid, "1D", f_mtf_prior("1D", startD, upD), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
     [c4, o4, i4, s4, n4, w4, t4] = request.security(syminfo.tickerid, "240", f_mtf_prior("240", start4, up4), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
@@ -1072,7 +1072,7 @@ if combined
         r5.consume("5", c5, o5, i5, s5, n5, w5, t5, mtfHistory)
         rm.consume("1", mc, mo, mi, ms, mn, mw, mr, mtfHistory)
     if barstate.islast
-        table.cell(mtfPanel, 0, 0, "TopG v0.5.0-dev", bgcolor=color.white, text_color=color.black)
+        table.cell(mtfPanel, 0, 0, "TopG v0.5.1-dev", bgcolor=color.white, text_color=color.black)
         table.cell(mtfPanel, 1, 0, "Combined REAL-event audit / UNVERIFIED", bgcolor=color.white, text_color=color.black)
         f_mtf_row(mtfPanel, 1, "D1", rd)
         f_mtf_row(mtfPanel, 2, "H4", r4)
