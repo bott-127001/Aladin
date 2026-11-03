@@ -2,7 +2,7 @@
 indicator("TopG v0.5.1-dev - Combined Real Events", overlay=true, max_lines_count=450, max_labels_count=450, max_boxes_count=250, calc_bars_count=1200)
 // Native engine plus selected-source transport audit. UNVERIFIED until chart tests pass.
 // D-006 preserved. Opt-in combined audit; no taps, usage or entries.
-// LIMITED COVERAGE: max 1200 chart bars in all modes; missing starts are never replaced.
+// COVERAGE: chart execution window controlled by Calculated bars (verify externally, limit capacity); source request count sourceBars + 2; missing starts are never replaced.
 start = input.time(timestamp("01 Oct 2026 00:00 +0530"), "Starting candle OPEN time", confirm=true, group="Initialization")
 initialDir = input.string("Upward", "Starting direction", options=["Upward", "Downward"], group="Initialization")
 msmView = input.string("History", "MSM view", options=["Off", "Latest", "History"], group="Display")
@@ -380,6 +380,8 @@ type ContextState
     int firstOpen = na
     int lastClose = na
     string trend = "Waiting for start"
+    int trendState = 0
+    int trendStateSince = na
     string lastEvent = "None"
     string issStatus = "Waiting for main point 3"
 f_context(bool up) =>
@@ -400,6 +402,8 @@ method advanceContext(ContextState c, array<float> bh, array<float> bl, array<fl
         c.started := true
         c.firstOpen := sourceOpen
         c.trend := m.up ? "Marking upward structure" : "Marking downward structure"
+        c.trendState := 0
+        c.trendStateSince := sourceClose
     if c.started and not c.halted
         if array.size(times) >= capacity
             c.halted := true
@@ -437,6 +441,10 @@ method advanceContext(ContextState c, array<float> bh, array<float> bl, array<fl
                     if m.pairs >= 2
                         bool agrees = m.up ? m.ch > oldHigh and m.cl > oldLow : m.ch < oldHigh and m.cl < oldLow
                         c.trend := agrees ? (m.up ? "Upward trend" : "Downward trend") : "Trend not confirmed"
+                        int newTrendState = agrees ? (m.up ? 1 : 2) : 0
+                        if newTrendState != c.trendState
+                            c.trendState := newTrendState
+                            c.trendStateSince := sourceClose
                     c.lastEvent := "Pair " + str.tostring(c.totalPairs) + " confirmed"
                     CalcEvent e = f_event(symbol, tf, 20, c.totalPairs, sourceOpen, sourceClose, candleHigh, candleLow, m.up)
                     f_capture(e, 1, m.hi, true, bh, bl, wh, wl, times)
@@ -456,6 +464,9 @@ method advanceContext(ContextState c, array<float> bh, array<float> bl, array<fl
                     c.publish(batch, e)
                     m.restartAfterChoch(i)
                     c.trend := m.up ? "Marking upward structure" : "Marking downward structure"
+                    if c.trendState != 0
+                        c.trendState := 0
+                        c.trendStateSince := sourceClose
                     c.lastEvent := (c.choch.bullish ? "Bullish" : "Bearish") + " CHOCH " + str.tostring(c.choch.count)
                 if ev == 2 or changed
                     bool wasRunning = internal.cancelSearch()
@@ -779,7 +790,7 @@ if barstate.islast and not auditRequested and not combined
     ISSState ins = ctx.iss
     string state = ctx.halted ? "HALTED: see last event" : not ctx.started ? "Start not found: select loaded candle OPEN" : m.pending ? "Waiting: continuation or CHOCH" : "Searching for pullback"
     array<string> keys = array.from("TopG v0.5.1-dev", "State", "Current direction / chart", "Structure", "Pairs: total / direction", "Confirmed high / low", "Tentative / CHOCH closes", "CHOCH count / side", "Last CHOCH close", "ISS state", "ISS count / last side", "Last ISS close", "ISS rejected / outside close / cancelled", "Candles / empty pairs skipped", "Omitted points / zones / markers", "Last main event", "Scope")
-    array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native mode; LIMITED 1200 chart bars. Combined audit opt-in; no entries")
+    array<string> vals = array.from("MSM CHOCH ISS TJL / UNVERIFIED", state, (m.up ? "Upward" : "Downward") + " / " + timeframe.period, ctx.trend, str.tostring(ctx.totalPairs) + " / " + str.tostring(m.pairs), f_price(m.ch) + " / " + f_price(m.cl), f_price(m.tentative) + " / " + str.tostring(ch.run), str.tostring(ch.count) + " / " + (ch.count == 0 ? "None" : ch.bullish ? "Bullish" : "Bearish"), f_time(ch.confirmedAt), ctx.issStatus, str.tostring(ins.count) + " / " + (ins.count == 0 ? "None" : ins.bullish ? "Bullish" : "Bearish"), f_time(ins.confirmedAt), str.tostring(ins.rejected) + " / " + str.tostring(ins.outside) + " / " + str.tostring(ins.cancelled), str.tostring(array.size(ts)) + " / " + str.tostring(ctx.skipped), str.tostring(omittedPoints) + " / " + str.tostring(omittedZones) + " / " + str.tostring(omittedEvents), ctx.lastEvent, "Native mode; chart window controlled by Calculated bars (verify externally, limit " + str.tostring(limit) + "). Combined audit opt-in; no entries")
     for row = 0 to 16
         table.cell(panel, 0, row, array.get(keys, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
         table.cell(panel, 1, row, array.get(vals, row), bgcolor=color.white, text_color=color.black, text_size=size.small)
@@ -907,7 +918,7 @@ if barstate.islast and h1Diagnostic != "Off"
     table.cell(h1Panel, 0, 0, heading, bgcolor=color.white, text_color=color.black, text_size=size.small)
     table.cell(h1Panel, 0, 1, na(h1Packet) ? "Waiting for previous completed source snapshot" : h1Packet.report, bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.small)
     string delivery = h1Requested ? "Observed M1 OPEN: " + f_time(h1ObservedOpen) + " | LIVE: " + f_time(h1ObservedLive) + "\n" + h1Coverage : "Native baseline: previous completed source snapshot"
-    table.cell(h1Panel, 0, 2, delivery + "\nSingle-source audit: use that source candle OPEN/direction in Initialization. Retained IDs are the latest batch, not a complete event stream. This single-source panel displays IDs only; combined mode transports full payloads. No taps or entries. LIMITED 1200 chart bars. Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
+    table.cell(h1Panel, 0, 2, delivery + "\nSingle-source audit: use that source candle OPEN/direction in Initialization. Retained IDs are the latest batch, not a complete event stream. This single-source panel displays IDs only; combined mode transports full payloads. No taps or entries. Chart window controlled by Calculated bars (verify externally, limit " + str.tostring(limit) + "); source request count sourceBars + 2 (" + str.tostring(sourceBars + 2) + "). Compare source close, retained batch close and identical inputs. Start dependence unresolved; runtime/replay/reload UNVERIFIED.", bgcolor=color.white, text_color=color.black, text_halign=text.align_left, text_size=size.tiny)
 
 
 // Complete scalar wire codec. Percent escaping keeps string fields unambiguous.
@@ -964,6 +975,16 @@ f_wire_batch(array<CalcEvent> events) =>
         runtime.error("Event wire packet overflow: no truncation allowed")
     wire
 
+f_tjl_wire_snapshot(ContextState c, string symbol, string tf) =>
+    if not c.started or c.halted
+        "TJL2,UNAVAILABLE,~"
+    else if na(c.tjl.current)
+        "TJL2,NONE," + f_wi(c.lastClose) + "," + f_wi(c.trendState) + "," + f_wi(c.trendStateSince)
+    else
+        TJLRecord t = c.tjl.current
+        array<string> a = array.from("TJL2", "SET", f_ws(symbol), f_ws(tf), f_wi(t.serial), f_wb(t.up), f_wi(t.highOrigin), f_wi(t.lowOrigin), f_wf(t.highUpper), f_wf(t.highLower), f_wf(t.lowUpper), f_wf(t.lowLower), f_wi(t.made), f_wi(t.ready), f_wi(t.p3), f_wf(t.p3price), f_wi(c.lastClose), f_wi(c.trendState), f_wi(c.trendStateSince))
+        array.join(a, ",")
+
 // Independent real detector contexts. Only primitive tuples leave requests.
 f_mtf_build(string tf, int reference, bool up) =>
     var ContextState c = f_context(up)
@@ -978,10 +999,443 @@ f_mtf_build(string tf, int reference, bool up) =>
     bool ok = c.advanceContext(bh, bl, highs, lows, opens, records, events, syminfo.tickerid, tf, reference, limit, keepTJL, tf == "60" or tf == "5" or tf == "1", tf == "1D" or tf == "240" or tf == "60", open, high, low, close, time, time_close, open[1], high[1], low[1], close[1], time_close[1])
     H1Audit a = f_h1_audit(c, array.size(opens), events)
     string report = a.report + "\nRequested start OPEN: " + f_time(reference) + " | Available source history from: " + f_time(availableFrom)
-    [time_close, time, bar_index, c.sequence, array.size(events), f_wire_batch(events), report]
+    string snap = f_tjl_wire_snapshot(c, syminfo.tickerid, tf)
+    [time_close, time, bar_index, c.sequence, array.size(events), f_wire_batch(events), report, snap]
 f_mtf_prior(string tf, int reference, bool up) =>
-    [tc, op, ix, seq, n, wire, report] = f_mtf_build(tf, reference, up)
-    [tc[1], op[1], ix[1], seq[1], n[1], wire[1], report[1]]
+    [tc, op, ix, seq, n, wire, report, snap] = f_mtf_build(tf, reference, up)
+    [tc[1], op[1], ix[1], seq[1], n[1], wire[1], report[1], snap[1], op, tc, ix]
+type TJLRegistryEntry
+    string symbol = ""
+    string tf = ""
+    int serial = 0
+    bool up = true
+    int highOrigin = na
+    int lowOrigin = na
+    float highUpper = na
+    float highLower = na
+    float lowUpper = na
+    float lowLower = na
+    int made = na
+    int ready = na
+    int ended = na
+    int firstObserved = na
+    int lastObserved = na
+    int p3 = na
+    float p3price = na
+    int endReason = 0
+    bool fromSnapshot = false
+    bool eventObserved = false
+var int TJL_CANCEL_REPLACEMENT = 1
+var int TJL_CANCEL_CHOCH = 2
+type TJLActivation
+    string symbol = ""
+    string tf = ""
+    int serial = 0
+    int made = na
+    string level = ""
+    bool up = true
+    float upper = na
+    float lower = na
+    bool pending = false
+    bool cancelled = false
+    int tapOpen = na
+    int tapClose = na
+    int tapObserved = na
+    int cancelledAt = na
+    int cancelObserved = na
+    int cancelReason = 0
+type TJLConfirmationEvent
+    string symbol = ""
+    string tf = ""
+    string id = ""
+    int kind = 0
+    int serial = 0
+    int sourceClose = na
+    bool up = false
+type TJLConfirmationMatch
+    string actSymbol = ""
+    string actTF = ""
+    int actSerial = 0
+    int actMade = na
+    string actLevel = ""
+    bool actUp = false
+    int tapOpen = na
+    int tapClose = na
+    int tapObserved = na
+    string confType = ""
+    string confTF = ""
+    string confId = ""
+    int confClose = na
+    int confObserved = na
+    string status = "Provisional (no entry selection or level usage)"
+
+type TJLCreationRecord
+    string symbol = ""
+    string tf = ""
+    string eventId = ""
+    int sequence = 0
+    int serial = 0
+    bool up = true
+    int sourceOpen = na
+    int sourceClose = na
+    int made = na
+    int ready = na
+    int highOrigin = na
+    int lowOrigin = na
+    float highUpper = na
+    float highLower = na
+    float lowUpper = na
+    float lowLower = na
+    int p3Origin = na
+    float p3Price = na
+    int observedAt = na
+
+type TJLSetEndRecord
+    string symbol = ""
+    string tf = ""
+    string eventId = ""
+    int sequence = 0
+    int serial = 0
+    int made = na
+    bool up = true
+    int sourceClose = na
+    int ended = na
+    int endReason = 0
+    int observedAt = na
+
+type ConfirmationRecord
+    string symbol = ""
+    string tf = ""
+    string eventId = ""
+    int sequence = 0
+    int kind = 0
+    int serial = 0
+    bool up = true
+    int sourceOpen = na
+    int sourceClose = na
+    int observedAt = na
+
+type SnapshotRecord
+    string symbol = ""
+    string tf = ""
+    string protocolVer = ""
+    string status = ""
+    int asOfClose = na
+    int serial = na
+    int made = na
+    int ready = na
+    bool up = false
+    int highOrigin = na
+    int lowOrigin = na
+    float highUpper = na
+    float highLower = na
+    float lowUpper = na
+    float lowLower = na
+    int p3Origin = na
+    float p3Price = na
+    bool trendValid = false
+    int trendState = 0
+    int trendSince = na
+    int observedAt = na
+
+type M1OHLCRecord
+    int barIndex = 0
+    int candleOpen = na
+    int candleClose = na
+    float o = na
+    float h = na
+    float l = na
+    float c = na
+    int observedAt = na
+
+type FirstTapRecord
+    string symbol = ""
+    string tf = ""
+    int serial = 0
+    int made = na
+    string level = ""
+    bool up = true
+    float upper = na
+    float lower = na
+    int tapOpen = na
+    int tapClose = na
+    int tapObserved = na
+
+type CentralCandidateRecord
+    string actSymbol = ""
+    string actTF = ""
+    int actSerial = 0
+    int actMade = na
+    string actLevel = ""
+    bool actUp = true
+    int tapOpen = na
+    int tapClose = na
+    int tapObserved = na
+    string confId = ""
+    int confKind = 0
+    string confTF = ""
+    int confClose = na
+    int confObserved = na
+    string conf2Id = ""
+    int conf2Kind = 0
+    int conf2Observed = na
+    int evalObserved = na
+    string status = ""
+    string blockingReason = ""
+    bool isCancelled = false
+    string cancelReason = ""
+    bool hasConflict = false
+    string conflictReason = ""
+
+type CentralEvidenceLedger
+    array<TJLCreationRecord> creations
+    array<TJLSetEndRecord> setEnds
+    array<ConfirmationRecord> confirmations
+    array<SnapshotRecord> snapshots
+    array<M1OHLCRecord> m1Candles
+    array<FirstTapRecord> firstTaps
+    array<CentralCandidateRecord> candidates
+    array<string> dedupKeys
+    int tapCursor = 0
+    int confCursor = 0
+    int setEndCursor = 0
+    int creationCursor = 0
+    bool intakeBroken = false
+    string brokenReason = "Healthy"
+    string failCategory = ""
+    string failSymbol = ""
+    string failTF = ""
+    int failSourceEndpoint = na
+    int failObservedAt = na
+    string failReason = ""
+    int firstObserved = na
+    int lastObserved = na
+
+var int LEDGER_CAP_CREATIONS = 200
+var int LEDGER_CAP_SET_ENDS = 200
+var int LEDGER_CAP_CONFIRMATIONS = 1000
+var int LEDGER_CAP_SNAPSHOTS = 2000
+var int LEDGER_CAP_M1_CANDLES = 5000
+var int LEDGER_CAP_FIRST_TAPS = 200
+var int LEDGER_CAP_CANDIDATES = 200
+var int LEDGER_CAP_DEDUP_KEYS = 10000
+
+f_ledger_new() =>
+    CentralEvidenceLedger.new(
+        creations=array.new<TJLCreationRecord>(),
+        setEnds=array.new<TJLSetEndRecord>(),
+        confirmations=array.new<ConfirmationRecord>(),
+        snapshots=array.new<SnapshotRecord>(),
+        m1Candles=array.new<M1OHLCRecord>(),
+        firstTaps=array.new<FirstTapRecord>(),
+        candidates=array.new<CentralCandidateRecord>(),
+        dedupKeys=array.new_string(),
+        tapCursor=0,
+        confCursor=0,
+        setEndCursor=0,
+        creationCursor=0,
+        intakeBroken=false,
+        brokenReason="Healthy",
+        failCategory="",
+        failSymbol="",
+        failTF="",
+        failSourceEndpoint=na,
+        failObservedAt=na,
+        failReason="",
+        firstObserved=na,
+        lastObserved=na)
+
+method recordFailure(CentralEvidenceLedger l, string category, string symbol, string tf, int sourceEndpoint, int observedAt, string reason) =>
+    if not l.intakeBroken
+        l.intakeBroken := true
+        l.failCategory := category
+        l.failSymbol := symbol
+        l.failTF := tf
+        l.failSourceEndpoint := sourceEndpoint
+        l.failObservedAt := observedAt
+        l.failReason := reason
+        l.brokenReason := category + ": " + reason
+    false
+
+method recordObserved(CentralEvidenceLedger l, int obs) =>
+    if na(l.firstObserved)
+        l.firstObserved := obs
+    l.lastObserved := obs
+    true
+
+method ingestCreation(CentralEvidenceLedger l, CalcEvent e, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "K50:" + e.symbol + ":" + e.tf + ":" + str.tostring(e.serial) + ":" + str.tostring(e.made) + ":" + e.id + ":" + str.tostring(e.sequence)
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.creations) >= LEDGER_CAP_CREATIONS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "creations reached cap " + str.tostring(LEDGER_CAP_CREATIONS))
+            else
+                array.push(l.dedupKeys, key)
+                TJLCreationRecord rec = TJLCreationRecord.new(
+                    symbol=e.symbol, tf=e.tf, eventId=e.id, sequence=e.sequence, serial=e.serial, up=e.up,
+                    sourceOpen=e.sourceOpen, sourceClose=e.sourceClose, made=e.made, ready=e.ready,
+                    highOrigin=e.o1, lowOrigin=e.o2, highUpper=e.h1, highLower=e.l1, lowUpper=e.h2, lowLower=e.l2,
+                    p3Origin=e.o3, p3Price=e.p3, observedAt=observedAt)
+                array.push(l.creations, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+method ingestSetEnd(CentralEvidenceLedger l, CalcEvent e, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "K51:" + e.symbol + ":" + e.tf + ":" + str.tostring(e.serial) + ":" + str.tostring(e.made) + ":" + str.tostring(e.ended) + ":" + str.tostring(e.reason) + ":" + e.id
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.setEnds) >= LEDGER_CAP_SET_ENDS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "set-ends reached cap " + str.tostring(LEDGER_CAP_SET_ENDS))
+            else
+                array.push(l.dedupKeys, key)
+                TJLSetEndRecord rec = TJLSetEndRecord.new(
+                    symbol=e.symbol, tf=e.tf, eventId=e.id, sequence=e.sequence, serial=e.serial, made=e.made, up=e.up,
+                    sourceClose=e.sourceClose, ended=e.ended, endReason=e.reason, observedAt=observedAt)
+                array.push(l.setEnds, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+method ingestConfirmation(CentralEvidenceLedger l, CalcEvent e, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "CONF:" + e.symbol + ":" + e.tf + ":" + str.tostring(e.kind) + ":" + str.tostring(e.serial) + ":" + str.tostring(e.sourceClose) + ":" + e.id + ":" + str.tostring(e.sequence)
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.confirmations) >= LEDGER_CAP_CONFIRMATIONS
+                l.recordFailure("Capacity", e.symbol, e.tf, e.sourceClose, observedAt, "confirmations reached cap " + str.tostring(LEDGER_CAP_CONFIRMATIONS))
+            else
+                array.push(l.dedupKeys, key)
+                ConfirmationRecord rec = ConfirmationRecord.new(
+                    symbol=e.symbol, tf=e.tf, eventId=e.id, sequence=e.sequence, kind=e.kind, serial=e.serial, up=e.up,
+                    sourceOpen=e.sourceOpen, sourceClose=e.sourceClose, observedAt=observedAt)
+                array.push(l.confirmations, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+method ingestSnapshot(CentralEvidenceLedger l, string symbol, string tf, string ver, string status, int asOfClose, int serial, int made, int ready, bool up, int ho, float hu, float hl, int lo, float lu, float ll, int p3o, float p3p, bool trendValid, int trendState, int trendSince, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "SNAP:" + symbol + ":" + tf + ":" + str.tostring(asOfClose) + ":" + status + ":" + (status == "SET" ? str.tostring(serial) + ":" + str.tostring(made) : "NONE")
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", symbol, tf, asOfClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.snapshots) >= LEDGER_CAP_SNAPSHOTS
+                l.recordFailure("Capacity", symbol, tf, asOfClose, observedAt, "snapshots reached cap " + str.tostring(LEDGER_CAP_SNAPSHOTS))
+            else
+                array.push(l.dedupKeys, key)
+                SnapshotRecord rec = SnapshotRecord.new(
+                    symbol=symbol, tf=tf, protocolVer=ver, status=status, asOfClose=asOfClose,
+                    serial=serial, made=made, ready=ready, up=up, highOrigin=ho, highUpper=hu, highLower=hl,
+                    lowOrigin=lo, lowUpper=lu, lowLower=ll, p3Origin=p3o, p3Price=p3p,
+                    trendValid=trendValid, trendState=trendState, trendSince=trendSince, observedAt=observedAt)
+                array.push(l.snapshots, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+method ingestM1OHLC(CentralEvidenceLedger l, int bx, int op, int cl, float o, float h, float l_val, float c, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "M1:" + str.tostring(bx) + ":" + str.tostring(op)
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", syminfo.tickerid, "1", cl, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.m1Candles) >= LEDGER_CAP_M1_CANDLES
+                l.recordFailure("Capacity", syminfo.tickerid, "1", cl, observedAt, "M1 candles reached cap " + str.tostring(LEDGER_CAP_M1_CANDLES))
+            else
+                array.push(l.dedupKeys, key)
+                M1OHLCRecord rec = M1OHLCRecord.new(
+                    barIndex=bx, candleOpen=op, candleClose=cl, o=o, h=h, l=l_val, c=c, observedAt=observedAt)
+                array.push(l.m1Candles, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+method ingestFirstTap(CentralEvidenceLedger l, string symbol, string tf, int serial, int made, string level, bool up, float upper, float lower, int tapOpen, int tapClose, int observedAt) =>
+    bool inserted = false
+    if not l.intakeBroken
+        string key = "TAP:" + symbol + ":" + tf + ":" + str.tostring(serial) + ":" + str.tostring(made) + ":" + level + ":" + str.tostring(tapOpen)
+        if not array.includes(l.dedupKeys, key)
+            if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                l.recordFailure("Capacity", symbol, tf, tapClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+            else if array.size(l.firstTaps) >= LEDGER_CAP_FIRST_TAPS
+                l.recordFailure("Capacity", symbol, tf, tapClose, observedAt, "first-taps reached cap " + str.tostring(LEDGER_CAP_FIRST_TAPS))
+            else
+                array.push(l.dedupKeys, key)
+                FirstTapRecord rec = FirstTapRecord.new(
+                    symbol=symbol, tf=tf, serial=serial, made=made, level=level, up=up, upper=upper, lower=lower,
+                    tapOpen=tapOpen, tapClose=tapClose, tapObserved=observedAt)
+                array.push(l.firstTaps, rec)
+                l.recordObserved(observedAt)
+                inserted := true
+    inserted
+
+f_tjl_activation_new(string symbol, string tf, int serial, int made, string level, bool up, float upper, float lower) =>
+    TJLActivation result = na
+    bool validSym = symbol != ""
+    bool validTF = tf != ""
+    bool validSerial = serial > 0
+    bool validMade = not na(made) and made > 0
+    bool validLevel = level == "TJL1" or level == "TJL2"
+    bool validGeom = not na(upper) and not na(lower) and lower <= upper
+    if validSym and validTF and validSerial and validMade and validLevel and validGeom
+        result := TJLActivation.new(symbol=symbol, tf=tf, serial=serial, made=made, level=level, up=up, upper=upper, lower=lower, pending=false, cancelled=false, tapOpen=na, tapClose=na, tapObserved=na, cancelledAt=na, cancelObserved=na, cancelReason=0)
+    result
+f_tjl_activations_create(string symbol, string tf, int serial, int made, bool up, float highUpper, float highLower, float lowUpper, float lowLower) =>
+    float tjl1Upper = up ? highUpper : lowUpper
+    float tjl1Lower = up ? highLower : lowLower
+    float tjl2Upper = up ? lowUpper : highUpper
+    float tjl2Lower = up ? lowLower : highLower
+    TJLActivation a1 = f_tjl_activation_new(symbol, tf, serial, made, "TJL1", up, tjl1Upper, tjl1Lower)
+    TJLActivation a2 = f_tjl_activation_new(symbol, tf, serial, made, "TJL2", up, tjl2Upper, tjl2Lower)
+    [a1, a2]
+method touch(TJLActivation a, float candleHigh, float candleLow, int candleOpen, int candleClose, int observedAt, bool isAvailable, bool isEligible, bool isUnused, CentralEvidenceLedger ledger) =>
+    bool result = false
+    if not na(a) and not a.cancelled and isAvailable and isEligible and isUnused
+        bool validMade = not na(a.made) and a.made > 0
+        bool validCandleGeom = not na(candleHigh) and not na(candleLow) and candleLow <= candleHigh
+        bool validTimes = not na(candleOpen) and not na(candleClose) and candleOpen > 0 and candleClose > candleOpen and not na(observedAt) and observedAt >= candleClose
+        bool validZone = not na(a.upper) and not na(a.lower) and a.lower <= a.upper
+        bool validAvailability = validMade and candleOpen >= a.made
+        if validMade and validCandleGeom and validTimes and validZone and validAvailability
+            bool intersects = candleHigh >= a.lower and candleLow <= a.upper
+            if intersects
+                if not a.pending
+                    a.pending := true
+                    a.tapOpen := candleOpen
+                    a.tapClose := candleClose
+                    a.tapObserved := observedAt
+                    if not na(ledger)
+                        ledger.ingestFirstTap(a.symbol, a.tf, a.serial, a.made, a.level, a.up, a.upper, a.lower, candleOpen, candleClose, observedAt)
+                result := true
+    result
+method cancel(TJLActivation a, string cancelSymbol, string cancelTF, int cancelSerial, int cancelMade, int sourceCancelTime, int observedAt, int reason) =>
+    bool result = false
+    if not na(a)
+        bool validMade = not na(a.made) and a.made > 0
+        bool validCancelMade = not na(cancelMade) and cancelMade > 0
+        bool identityMatch = a.symbol == cancelSymbol and a.tf == cancelTF and a.serial == cancelSerial and validMade and validCancelMade and a.made == cancelMade
+        bool validTimes = not na(sourceCancelTime) and validMade and sourceCancelTime >= a.made and not na(observedAt) and observedAt >= sourceCancelTime
+        bool validReason = reason == TJL_CANCEL_REPLACEMENT or reason == TJL_CANCEL_CHOCH
+        if identityMatch and validTimes and validReason
+            if not a.cancelled
+                a.cancelled := true
+                a.pending := false
+                a.cancelledAt := sourceCancelTime
+                a.cancelObserved := observedAt
+                a.cancelReason := reason
+                result := true
+    result
 type MTFReceiver
     int sourceClose = na
     int sourceIndex = na
@@ -995,7 +1449,741 @@ type MTFReceiver
     int retainedSize = 0
     string retainedIDs = "None"
     string report = "Waiting for confirmed source packet"
-method consume(MTFReceiver r, string tf, int tc, int op, int ix, int seq, int n, string wire, string report, array<string> history) =>
+    TJLRegistryEntry currentTJL = na
+    string registryStatus = "Unavailable / unverified"
+    string registryReason = "Initial receiver state; waiting for packet" 
+    int snapshotAdoptions = 0
+    string firstAdoptedSymbol = ""
+    string firstAdoptedTF = ""
+    int firstAdoptedSerial = na
+    int firstAdoptedMade = na
+    int firstAdoptedReady = na
+    int firstAdoptedObserved = na
+    TJLActivation act1 = na
+    TJLActivation act2 = na
+    int actKnownAt = na
+    TJLActivation retiredAct1 = na
+    TJLActivation retiredAct2 = na
+    string actDiagnostic = "None"
+    string actLifecycleStatus = "None"
+    bool trendAvailable = false
+    int trendState = 0
+    int trendStateSince = na
+    int trendSourceAsOf = na
+    int trendObservedAt = na
+    string trendDiagnostic = "None"
+    string preActSymbol = ""
+    string preActTF = ""
+    int preActSerial = na
+    int preActMade = na
+    bool preActUp = false
+    string preAct1Level = ""
+    string preAct2Level = ""
+    int preActKnownAt = na
+    bool preActCancelled = false
+    bool preTrendAvailable = false
+    int preTrendState = 0
+    int preTrendObservedAt = na
+    bool preLifecycleConsistent = false
+    bool preRegistryConsistent = false
+    bool preCurrentTJLMatch = false
+    bool touchGateAllowed = false
+    string touchGateReason = "Waiting for evaluation"
+    bool availLevelKnown = false
+    int availLevelKnownAt = na
+    bool availTrendKnown = false
+    int availTrendObservedAt = na
+    bool availTrendMatches = false
+    array<TJLConfirmationEvent> stagedConfirmations = na
+    array<TJLConfirmationMatch> matches = na
+    array<string> matchKeys = na
+    int totalMatches = 0
+    int matchOmitted = 0
+    bool matchSaturated = false
+    int devOpen = na
+    int devClose = na
+    int devIndex = na
+    int devObserved = na
+    bool progressValid = false
+    string progressReason = "Waiting for progress evidence"
+method updateTJLActivations(MTFReceiver r, string symbol, string tf, int serial, int made, int ended, bool up, float highUpper, float highLower, float lowUpper, float lowLower, int deliveredAt) =>
+    bool isTradeFinding = tf == "1D" or tf == "240" or tf == "60"
+    if isTradeFinding
+        bool validDelivery = not na(deliveredAt) and not na(made) and deliveredAt >= made
+        if not validDelivery
+            r.actDiagnostic := na(deliveredAt) ? "Missing delivery time for incoming set #" + str.tostring(serial) : na(made) ? "Missing made time for incoming set #" + str.tostring(serial) : "Delivery time " + f_time(deliveredAt) + " precedes made " + f_time(made) + " for incoming set #" + str.tostring(serial)
+            r.actLifecycleStatus := "Unresolved"
+        else
+            bool missingGeom = na(highUpper) or na(highLower) or na(lowUpper) or na(lowLower)
+            bool invertedGeom = not missingGeom and (highLower > highUpper or lowLower > lowUpper)
+            if missingGeom or invertedGeom
+                r.actDiagnostic := missingGeom ? "Missing zone geometry for incoming set #" + str.tostring(serial) : "Inverted zone bounds for incoming set #" + str.tostring(serial)
+                r.actLifecycleStatus := "Unresolved"
+            else
+                float expTjl1Upper = up ? highUpper : lowUpper
+                float expTjl1Lower = up ? highLower : lowLower
+                float expTjl2Upper = up ? lowUpper : highUpper
+                float expTjl2Lower = up ? lowLower : highLower
+                TJLActivation newAct1 = f_tjl_activation_new(symbol, tf, serial, made, "TJL1", up, expTjl1Upper, expTjl1Lower)
+                TJLActivation newAct2 = f_tjl_activation_new(symbol, tf, serial, made, "TJL2", up, expTjl2Upper, expTjl2Lower)
+                if na(newAct1) or na(newAct2)
+                    r.actDiagnostic := "Constructor rejected incoming activation records for set #" + str.tostring(serial)
+                    r.actLifecycleStatus := "Unresolved"
+                else
+                    bool hasExisting = not na(r.act1) and not na(r.act2)
+                    bool hasPartial = (not na(r.act1) and na(r.act2)) or (na(r.act1) and not na(r.act2))
+                    if hasPartial
+                        r.actDiagnostic := "Partial activation pair state detected"
+                        r.actLifecycleStatus := "Unresolved"
+                    else if not hasExisting
+                        if not na(ended)
+                            r.actDiagnostic := "Initial set #" + str.tostring(serial) + " already ended at " + f_time(ended)
+                            r.actLifecycleStatus := "Unresolved"
+                        else
+                            r.act1 := newAct1
+                            r.act2 := newAct2
+                            r.actKnownAt := deliveredAt
+                            r.actLifecycleStatus := "Consistent"
+                    else
+                        bool existingLevelsValid = r.act1.level == "TJL1" and r.act2.level == "TJL2"
+                        bool existingIdentityMatch = r.act1.symbol == r.act2.symbol and r.act1.tf == r.act2.tf and r.act1.serial == r.act2.serial and not na(r.act1.made) and r.act1.made == r.act2.made and r.act1.up == r.act2.up
+                        bool existingGeomValid = not na(r.act1.upper) and not na(r.act1.lower) and r.act1.lower <= r.act1.upper and not na(r.act2.upper) and not na(r.act2.lower) and r.act2.lower <= r.act2.upper
+                        bool existingPairValid = existingLevelsValid and existingIdentityMatch and existingGeomValid
+                        if not existingPairValid
+                            r.actDiagnostic := not existingLevelsValid ? "Invalid existing activation levels: " + r.act1.level + " / " + r.act2.level : not existingIdentityMatch ? "Mismatched existing pair identity or side for set #" + str.tostring(r.act1.serial) : "Invalid existing pair zone geometry for set #" + str.tostring(r.act1.serial)
+                            r.actLifecycleStatus := "Unresolved"
+                        else
+                            bool exactMatch = r.act1.symbol == symbol and r.act1.tf == tf and r.act1.serial == serial and r.act1.made == made
+                            if exactMatch
+                                bool sideConsistent = r.act1.up == up and r.act2.up == up
+                                bool boundsConsistent = math.abs(r.act1.upper - expTjl1Upper) <= 0.00001 and math.abs(r.act1.lower - expTjl1Lower) <= 0.00001 and math.abs(r.act2.upper - expTjl2Upper) <= 0.00001 and math.abs(r.act2.lower - expTjl2Lower) <= 0.00001
+                                if not sideConsistent or not boundsConsistent
+                                    r.actDiagnostic := "Inconsistent geometry for set #" + str.tostring(serial)
+                                    r.actLifecycleStatus := "Unresolved"
+                            else
+                                bool symTFMatch = r.act1.symbol == symbol and r.act1.tf == tf
+                                bool isNewer = symTFMatch and serial > r.act1.serial and not na(made) and made >= r.act1.made
+                                if not symTFMatch
+                                    r.actDiagnostic := "Contradictory symbol/tf: " + symbol + "/" + tf + " != " + r.act1.symbol + "/" + r.act1.tf
+                                    r.actLifecycleStatus := "Unresolved"
+                                else if serial < r.act1.serial
+                                    r.actDiagnostic := "Regressive serial #" + str.tostring(serial) + " < #" + str.tostring(r.act1.serial)
+                                    r.actLifecycleStatus := "Unresolved"
+                                else if serial == r.act1.serial
+                                    r.actDiagnostic := "Contradictory made for serial #" + str.tostring(serial) + ": " + f_time(made) + " != " + f_time(r.act1.made)
+                                    r.actLifecycleStatus := "Unresolved"
+                                else if made < r.act1.made
+                                    r.actDiagnostic := "Contradictory timestamp: serial #" + str.tostring(serial) + " made " + f_time(made) + " precedes current #" + str.tostring(r.act1.serial) + " made " + f_time(r.act1.made)
+                                    r.actLifecycleStatus := "Unresolved"
+                                else if isNewer
+                                    bool validTimes = not na(made) and made >= r.act1.made and not na(deliveredAt) and deliveredAt >= made
+                                    if not validTimes
+                                        r.actDiagnostic := "Invalid replacement transition times for set #" + str.tostring(serial)
+                                        r.actLifecycleStatus := "Unresolved"
+                                    else
+                                        bool oldCancelled = r.act1.cancelled and r.act2.cancelled
+                                        if not oldCancelled
+                                            if not r.act1.cancelled
+                                                r.act1.cancel(r.act1.symbol, r.act1.tf, r.act1.serial, r.act1.made, made, deliveredAt, TJL_CANCEL_REPLACEMENT)
+                                            if not r.act2.cancelled
+                                                r.act2.cancel(r.act2.symbol, r.act2.tf, r.act2.serial, r.act2.made, made, deliveredAt, TJL_CANCEL_REPLACEMENT)
+                                        if not r.act1.cancelled or not r.act2.cancelled
+                                            r.actDiagnostic := "Cancellation failed for set #" + str.tostring(r.act1.serial)
+                                            r.actLifecycleStatus := "Unresolved"
+                                        else
+                                            r.retiredAct1 := r.act1
+                                            r.retiredAct2 := r.act2
+                                            if not na(ended)
+                                                r.act1 := na
+                                                r.act2 := na
+                                                r.actKnownAt := deliveredAt
+                                                r.actDiagnostic := "Replacing set #" + str.tostring(serial) + " already ended at " + f_time(ended)
+                                                r.actLifecycleStatus := "Unresolved"
+                                            else
+                                                r.act1 := newAct1
+                                                r.act2 := newAct2
+                                                r.actKnownAt := deliveredAt
+                                                r.actLifecycleStatus := "Consistent"
+    true
+method processTJL(MTFReceiver r, CalcEvent e, int deliveredAt) =>
+    bool isTradeFinding = e.tf == "1D" or e.tf == "240" or e.tf == "60"
+    if e.kind == 50
+        bool isMatching = not na(r.currentTJL) and r.currentTJL.symbol == e.symbol and r.currentTJL.tf == e.tf and r.currentTJL.serial == e.serial and r.currentTJL.made == e.made
+        if isMatching
+            if r.currentTJL.fromSnapshot and not r.currentTJL.eventObserved
+                r.currentTJL.eventObserved := true
+                r.currentTJL.lastObserved := deliveredAt
+                if na(r.currentTJL.ready) and not na(e.ready)
+                    r.currentTJL.ready := e.ready
+                if na(r.currentTJL.p3) and not na(e.o3)
+                    r.currentTJL.p3 := e.o3
+                    r.currentTJL.p3price := e.p3
+            else
+                r.currentTJL.lastObserved := deliveredAt
+            if isTradeFinding
+                r.updateTJLActivations(e.symbol, e.tf, e.serial, e.made, e.ended, e.up, e.h1, e.l1, e.h2, e.l2, deliveredAt)
+        else if not na(r.currentTJL) and e.serial < r.currentTJL.serial
+            true
+        else
+            if isTradeFinding
+                r.updateTJLActivations(e.symbol, e.tf, e.serial, e.made, e.ended, e.up, e.h1, e.l1, e.h2, e.l2, deliveredAt)
+            r.currentTJL := TJLRegistryEntry.new(symbol=e.symbol, tf=e.tf, serial=e.serial, up=e.up, highOrigin=e.o1, lowOrigin=e.o2, highUpper=e.h1, highLower=e.l1, lowUpper=e.h2, lowLower=e.l2, made=e.made, ready=e.ready, ended=e.ended, firstObserved=deliveredAt, lastObserved=deliveredAt, p3=e.o3, p3price=e.p3, endReason=e.reason, fromSnapshot=false, eventObserved=true)
+    else if e.kind == 51
+        if not na(r.currentTJL) and r.currentTJL.symbol == e.symbol and r.currentTJL.tf == e.tf and r.currentTJL.serial == e.serial and r.currentTJL.made == e.made
+            r.currentTJL.ended := e.ended
+            r.currentTJL.endReason := e.reason
+            r.currentTJL.lastObserved := deliveredAt
+            if isTradeFinding
+                bool validReason = e.reason == 1 or e.reason == 2
+                if not validReason
+                    r.actDiagnostic := "Unknown kind 51 end reason: " + str.tostring(e.reason)
+                    r.actLifecycleStatus := "Unresolved"
+                else
+                    bool hasPair = not na(r.act1) and not na(r.act2)
+                    if not hasPair
+                        r.actDiagnostic := "Missing or partial activation pair on kind 51 cancellation"
+                        r.actLifecycleStatus := "Unresolved"
+                    else
+                        bool act1Match = r.act1.symbol == e.symbol and r.act1.tf == e.tf and r.act1.serial == e.serial and r.act1.made == e.made
+                        bool act2Match = r.act2.symbol == e.symbol and r.act2.tf == e.tf and r.act2.serial == e.serial and r.act2.made == e.made
+                        if not act1Match or not act2Match
+                            r.actDiagnostic := "Activation identity mismatch on kind 51 cancellation for set #" + str.tostring(e.serial)
+                            r.actLifecycleStatus := "Unresolved"
+                        else
+                            bool validTimes = not na(e.ended) and not na(e.made) and e.ended >= e.made and not na(deliveredAt) and deliveredAt >= e.ended
+                            if not validTimes
+                                r.actDiagnostic := "Invalid cancellation or observation times for set #" + str.tostring(e.serial)
+                                r.actLifecycleStatus := "Unresolved"
+                            else
+                                int reasonCode = e.reason == 2 ? TJL_CANCEL_CHOCH : TJL_CANCEL_REPLACEMENT
+                                if not r.act1.cancelled
+                                    r.act1.cancel(e.symbol, e.tf, e.serial, e.made, e.ended, deliveredAt, reasonCode)
+                                if not r.act2.cancelled
+                                    r.act2.cancel(e.symbol, e.tf, e.serial, e.made, e.ended, deliveredAt, reasonCode)
+                                if not r.act1.cancelled or not r.act2.cancelled
+                                    r.actDiagnostic := "Cancellation failed for set #" + str.tostring(e.serial)
+                                    r.actLifecycleStatus := "Unresolved"
+    else if e.kind == 52
+        if not na(r.currentTJL) and r.currentTJL.symbol == e.symbol and r.currentTJL.tf == e.tf and r.currentTJL.serial == e.serial and r.currentTJL.made == e.made
+            if na(r.currentTJL.ended)
+                r.currentTJL.p3 := e.o3
+                r.currentTJL.p3price := e.p3
+                r.currentTJL.lastObserved := deliveredAt
+    true
+method adoptTJLSnapshot(MTFReceiver r, string symbol, string tf, int serial, bool up, int highOrigin, int lowOrigin, float highUpper, float highLower, float lowUpper, float lowLower, int made, int ready, int ended, int deliveredAt, int p3, float p3price, int endReason) =>
+    if na(r.currentTJL)
+        r.currentTJL := TJLRegistryEntry.new(symbol=symbol, tf=tf, serial=serial, up=up, highOrigin=highOrigin, lowOrigin=lowOrigin, highUpper=highUpper, highLower=highLower, lowUpper=lowUpper, lowLower=lowLower, made=made, ready=ready, ended=ended, firstObserved=deliveredAt, lastObserved=deliveredAt, p3=p3, p3price=p3price, endReason=endReason, fromSnapshot=true, eventObserved=false)
+        r.snapshotAdoptions += 1
+        if na(r.firstAdoptedSerial)
+            r.firstAdoptedSymbol := symbol
+            r.firstAdoptedTF := tf
+            r.firstAdoptedSerial := serial
+            r.firstAdoptedMade := made
+            r.firstAdoptedReady := ready
+            r.firstAdoptedObserved := deliveredAt
+        r.updateTJLActivations(symbol, tf, serial, made, ended, up, highUpper, highLower, lowUpper, lowLower, deliveredAt)
+    true
+method updateTrendEvidence(MTFReceiver r, string snapVersion, string snapStatus, int snapTrend, int snapSince, int snapClose, int deliveredAt) =>
+    if snapVersion == "TJL1"
+        r.trendAvailable := false
+        r.trendDiagnostic := "TJL1 legacy snapshot: no trend evidence"
+    else if snapVersion != "TJL2"
+        r.trendAvailable := false
+        r.trendDiagnostic := "Unsupported snapshot protocol version: " + snapVersion
+    else if snapStatus == "UNAVAILABLE"
+        r.trendAvailable := false
+        r.trendDiagnostic := "Source detector unstarted or halted"
+    else if snapStatus != "NONE" and snapStatus != "SET"
+        r.trendAvailable := false
+        r.trendDiagnostic := "Unknown snapshot status: " + snapStatus
+    else
+        bool validTrendCode = not na(snapTrend) and (snapTrend == 0 or snapTrend == 1 or snapTrend == 2)
+        bool validTimes = not na(snapSince) and snapSince > 0 and not na(snapClose) and snapClose > 0 and not na(deliveredAt) and deliveredAt > 0
+        if not validTrendCode
+            r.trendAvailable := false
+            r.trendDiagnostic := "Invalid trend code: " + str.tostring(snapTrend)
+        else if not validTimes
+            r.trendAvailable := false
+            r.trendDiagnostic := "Invalid non-positive or missing trend timestamps"
+        else if snapSince > snapClose
+            r.trendAvailable := false
+            r.trendDiagnostic := "Inverted trend timestamps: trendStateSince " + f_time(snapSince) + " > as-of " + f_time(snapClose)
+        else if snapClose > deliveredAt
+            r.trendAvailable := false
+            r.trendDiagnostic := "Future source as-of: snap " + f_time(snapClose) + " > delivery " + f_time(deliveredAt)
+        else if na(r.trendSourceAsOf)
+            r.trendAvailable := true
+            r.trendState := snapTrend
+            r.trendStateSince := snapSince
+            r.trendSourceAsOf := snapClose
+            r.trendObservedAt := deliveredAt
+            r.trendDiagnostic := "None"
+        else if snapClose < r.trendSourceAsOf
+            r.trendDiagnostic := "Regressive source as-of: snap " + f_time(snapClose) + " < current " + f_time(r.trendSourceAsOf)
+        else if snapClose == r.trendSourceAsOf
+            if snapTrend != r.trendState or snapSince != r.trendStateSince
+                r.trendAvailable := false
+                r.trendDiagnostic := "Contradictory trend evidence at identical as-of time " + f_time(snapClose)
+            else
+                r.trendObservedAt := deliveredAt
+        else
+            r.trendAvailable := true
+            r.trendState := snapTrend
+            r.trendStateSince := snapSince
+            r.trendSourceAsOf := snapClose
+            r.trendObservedAt := deliveredAt
+            r.trendDiagnostic := "None"
+    true
+method reconcileSnapshot(MTFReceiver r, string tf, int tc, string snap, int deliveredAt, CentralEvidenceLedger ledger) =>
+    if snap == ""
+        r.registryStatus := "Unavailable / unverified"
+        r.registryReason := "Snapshot payload empty"
+        r.trendAvailable := false
+        r.trendDiagnostic := "Snapshot payload empty"
+    else if snap == "TJL1,UNAVAILABLE,~" or snap == "TJL2,UNAVAILABLE,~"
+        r.registryStatus := "Unavailable / unverified"
+        r.registryReason := "Source detector unstarted or halted"
+        r.trendAvailable := false
+        r.trendDiagnostic := "Source unavailable"
+    else
+        array<string> parts = str.split(snap, ",")
+        int nParts = array.size(parts)
+        string ver = nParts > 0 ? array.get(parts, 0) : ""
+        string status = nParts > 1 ? array.get(parts, 1) : ""
+        if ver != "TJL1" and ver != "TJL2"
+            r.registryStatus := "Conflict / malformed"
+            r.registryReason := "Malformed: invalid snapshot protocol version (" + ver + ")"
+            r.trendAvailable := false
+            r.trendDiagnostic := "Malformed: invalid snapshot protocol version (" + ver + ")"
+            if not na(ledger)
+                ledger.recordFailure("Malformed snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+        else if status == "UNAVAILABLE"
+            if nParts != 3 or array.get(parts, 2) != "~"
+                r.registryStatus := "Conflict / malformed"
+                r.registryReason := "Malformed: UNAVAILABLE snapshot requires exactly 3 fields (" + str.tostring(nParts) + " found)"
+                r.trendAvailable := false
+                r.trendDiagnostic := "Malformed UNAVAILABLE payload"
+                if not na(ledger)
+                    ledger.recordFailure("Malformed snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+            else
+                r.registryStatus := "Unavailable / unverified"
+                r.registryReason := "Source detector unstarted or halted"
+                r.trendAvailable := false
+                r.trendDiagnostic := "Source unavailable"
+        else if status != "NONE" and status != "SET"
+            r.registryStatus := "Conflict / malformed"
+            r.registryReason := "Malformed: unknown snapshot status (" + status + ")"
+            r.trendAvailable := false
+            r.trendDiagnostic := "Malformed: unknown snapshot status (" + status + ")"
+            if not na(ledger)
+                ledger.recordFailure("Malformed snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+        else if status == "NONE"
+            int expNoneParts = ver == "TJL2" ? 5 : 3
+            if nParts != expNoneParts
+                r.registryStatus := "Conflict / malformed"
+                r.registryReason := "Malformed: " + ver + " NONE snapshot requires exactly " + str.tostring(expNoneParts) + " fields (" + str.tostring(nParts) + " found)"
+                r.trendAvailable := false
+                r.trendDiagnostic := "Malformed " + ver + " NONE payload: expected " + str.tostring(expNoneParts) + " fields, got " + str.tostring(nParts)
+                if not na(ledger)
+                    ledger.recordFailure("Malformed snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+            else
+                int snapClose = f_wint(parts, 2)
+                if na(snapClose) or snapClose != tc
+                    r.registryStatus := "Conflict / malformed"
+                    r.registryReason := "Snapshot endpoint mismatch: snap " + f_time(snapClose) + " != packet " + f_time(tc)
+                    r.trendAvailable := false
+                    r.trendDiagnostic := "Snapshot endpoint mismatch: snap " + f_time(snapClose) + " != packet " + f_time(tc)
+                    if not na(ledger)
+                        ledger.recordFailure("Snapshot mismatch", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+                else
+                    int snapTrend = ver == "TJL2" ? f_wint(parts, 3) : na
+                    int snapSince = ver == "TJL2" ? f_wint(parts, 4) : na
+                    r.updateTrendEvidence(ver, status, snapTrend, snapSince, snapClose, deliveredAt)
+                    bool hasTrendContradiction = ver == "TJL2" and (str.startswith(r.trendDiagnostic, "Contradictory trend") or str.startswith(r.trendDiagnostic, "Inverted trend") or str.startswith(r.trendDiagnostic, "Future source") or str.startswith(r.trendDiagnostic, "Regressive source"))
+                    if not na(r.currentTJL) and na(r.currentTJL.ended) and r.currentTJL.made == tc
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Contradiction: set #" + str.tostring(r.currentTJL.serial) + " created at endpoint " + f_time(tc) + " but snapshot reports NONE without end event"
+                        if not na(ledger)
+                            ledger.recordFailure("Contradictory snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+                    else
+                        if hasTrendContradiction
+                            if not na(ledger)
+                                ledger.recordFailure("Trend contradiction", syminfo.tickerid, tf, tc, deliveredAt, r.trendDiagnostic)
+                        if not na(r.currentTJL) and na(r.currentTJL.ended)
+                            r.currentTJL := na
+                        bool isTradeFinding = tf == "1D" or tf == "240" or tf == "60"
+                        if isTradeFinding and not na(r.act1) and not r.act1.cancelled
+                            r.actLifecycleStatus := "Unresolved"
+                            r.actDiagnostic := "Contradiction: NONE snapshot reports no active set, but unended activation set #" + str.tostring(r.act1.serial) + " is present"
+                            if not na(ledger)
+                                ledger.recordFailure("Contradictory snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.actDiagnostic)
+                        r.registryStatus := "Verified consistent"
+                        r.registryReason := "Consistent: source reports no active TJL set at " + f_time(tc)
+                        if not na(ledger) and tf != "1" and not hasTrendContradiction
+                            bool tValid = ver == "TJL2" and r.trendAvailable
+                            int tState = tValid ? snapTrend : 0
+                            int tSince = tValid ? snapSince : na
+                            ledger.ingestSnapshot(syminfo.tickerid, tf, ver, "NONE", snapClose, na, na, na, false, na, na, na, na, na, na, na, na, tValid, tState, tSince, deliveredAt)
+        else if status == "SET"
+            int expSetParts = ver == "TJL2" ? 19 : 17
+            if nParts != expSetParts
+                r.registryStatus := "Conflict / malformed"
+                r.registryReason := "Malformed: " + ver + " SET snapshot requires exactly " + str.tostring(expSetParts) + " fields (" + str.tostring(nParts) + " found)"
+                r.trendAvailable := false
+                r.trendDiagnostic := "Malformed " + ver + " SET payload: expected " + str.tostring(expSetParts) + " fields, got " + str.tostring(nParts)
+                if not na(ledger)
+                    ledger.recordFailure("Malformed snapshot", syminfo.tickerid, tf, tc, deliveredAt, r.registryReason)
+            else
+                string snapSym = f_wus(array.get(parts, 2))
+                string snapTF = f_wus(array.get(parts, 3))
+                int snapSerial = f_wint(parts, 4)
+                bool snapUp = f_wbool(parts, 5)
+                int snapHighOrigin = f_wint(parts, 6)
+                int snapLowOrigin = f_wint(parts, 7)
+                float snapHighUpper = f_wn(parts, 8)
+                float snapHighLower = f_wn(parts, 9)
+                float snapLowUpper = f_wn(parts, 10)
+                float snapLowLower = f_wn(parts, 11)
+                int snapMade = f_wint(parts, 12)
+                int snapReady = f_wint(parts, 13)
+                int snapP3 = f_wint(parts, 14)
+                float snapP3price = f_wn(parts, 15)
+                int snapClose = f_wint(parts, 16)
+                int snapTrend = ver == "TJL2" ? f_wint(parts, 17) : na
+                int snapSince = ver == "TJL2" ? f_wint(parts, 18) : na
+                if na(snapSerial) or snapSerial <= 0 or na(snapHighOrigin) or na(snapLowOrigin) or na(snapHighUpper) or na(snapHighLower) or na(snapLowUpper) or na(snapLowLower) or na(snapMade) or na(snapReady) or na(snapClose)
+                    r.registryStatus := "Conflict / malformed"
+                    r.registryReason := "Malformed: missing required identity/timestamp/geometry fields"
+                    r.trendAvailable := false
+                    r.trendDiagnostic := "Malformed: missing required identity/timestamp/geometry fields"
+                    if not na(ledger)
+                        ledger.recordFailure("Malformed snapshot", snapSym, snapTF, tc, deliveredAt, r.registryReason)
+                else if snapClose != tc
+                    r.registryStatus := "Conflict / malformed"
+                    r.registryReason := "Snapshot endpoint mismatch: snap " + f_time(snapClose) + " != packet " + f_time(tc)
+                    r.trendAvailable := false
+                    r.trendDiagnostic := "Snapshot endpoint mismatch: snap " + f_time(snapClose) + " != packet " + f_time(tc)
+                    if not na(ledger)
+                        ledger.recordFailure("Snapshot mismatch", snapSym, snapTF, tc, deliveredAt, r.registryReason)
+                else if snapSym != syminfo.tickerid or snapTF != tf
+                    r.registryStatus := "Conflict / malformed"
+                    r.registryReason := "Snapshot symbol/tf mismatch: " + snapSym + "/" + snapTF + " != " + syminfo.tickerid + "/" + tf
+                    r.trendAvailable := false
+                    r.trendDiagnostic := "Snapshot symbol/tf mismatch: " + snapSym + "/" + snapTF + " != " + syminfo.tickerid + "/" + tf
+                    if not na(ledger)
+                        ledger.recordFailure("Snapshot mismatch", snapSym, snapTF, tc, deliveredAt, r.registryReason)
+                else
+                    r.updateTrendEvidence(ver, status, snapTrend, snapSince, snapClose, deliveredAt)
+                    bool hasTrendContradiction = ver == "TJL2" and (str.startswith(r.trendDiagnostic, "Contradictory trend") or str.startswith(r.trendDiagnostic, "Inverted trend") or str.startswith(r.trendDiagnostic, "Future source") or str.startswith(r.trendDiagnostic, "Regressive source"))
+                    if snapHighLower > snapHighUpper or snapLowLower > snapLowUpper
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Malformed geometry: zone lower bound exceeds upper bound"
+                        if not na(ledger)
+                            ledger.recordFailure("Malformed snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if (na(snapP3) and not na(snapP3price)) or (not na(snapP3) and na(snapP3price))
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Malformed metadata: point-3 origin and price must be consistently present or absent"
+                        if not na(ledger)
+                            ledger.recordFailure("Malformed snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if na(r.currentTJL)
+                        r.currentTJL := TJLRegistryEntry.new(symbol=snapSym, tf=snapTF, serial=snapSerial, up=snapUp, highOrigin=snapHighOrigin, lowOrigin=snapLowOrigin, highUpper=snapHighUpper, highLower=snapHighLower, lowUpper=snapLowUpper, lowLower=snapLowLower, made=snapMade, ready=snapReady, ended=na, firstObserved=deliveredAt, lastObserved=deliveredAt, p3=snapP3, p3price=snapP3price, endReason=0, fromSnapshot=true, eventObserved=false)
+                        r.snapshotAdoptions += 1
+                        if na(r.firstAdoptedSerial)
+                            r.firstAdoptedSymbol := snapSym
+                            r.firstAdoptedTF := snapTF
+                            r.firstAdoptedSerial := snapSerial
+                            r.firstAdoptedMade := snapMade
+                            r.firstAdoptedReady := snapReady
+                            r.firstAdoptedObserved := deliveredAt
+                        r.updateTJLActivations(snapSym, snapTF, snapSerial, snapMade, na, snapUp, snapHighUpper, snapHighLower, snapLowUpper, snapLowLower, deliveredAt)
+                        r.registryStatus := "Verified consistent"
+                        r.registryReason := "Consistent: adopted initial set #" + str.tostring(snapSerial) + " from snapshot"
+                    else if r.currentTJL.serial == snapSerial and not na(r.currentTJL.ended)
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Contradiction: set #" + str.tostring(snapSerial) + " ended by validated event at " + f_time(r.currentTJL.ended) + " but snapshot reports it current"
+                        if not na(ledger)
+                            ledger.recordFailure("Contradictory snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if r.currentTJL.serial == snapSerial and (r.currentTJL.made != snapMade or r.currentTJL.ready != snapReady or r.currentTJL.up != snapUp or r.currentTJL.highOrigin != snapHighOrigin or r.currentTJL.lowOrigin != snapLowOrigin or math.abs(r.currentTJL.highUpper - snapHighUpper) > 0.00001 or math.abs(r.currentTJL.highLower - snapHighLower) > 0.00001 or math.abs(r.currentTJL.lowUpper - snapLowUpper) > 0.00001 or math.abs(r.currentTJL.lowLower - snapLowLower) > 0.00001)
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Contradiction: identity/geometry mismatch for serial #" + str.tostring(snapSerial) + " (made/ready/up/origins/zones disagree)"
+                        if not na(ledger)
+                            ledger.recordFailure("Contradictory snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if r.currentTJL.serial == snapSerial and not na(r.currentTJL.p3) and not na(snapP3) and (r.currentTJL.p3 != snapP3 or math.abs(r.currentTJL.p3price - snapP3price) > 0.00001)
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Contradiction: conflicting point-3 metadata for set #" + str.tostring(snapSerial) + " (origin/price mismatch)"
+                        if not na(ledger)
+                            ledger.recordFailure("Contradictory snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if snapSerial < r.currentTJL.serial
+                        r.registryStatus := "Conflict / malformed"
+                        r.registryReason := "Contradiction: snapshot serial #" + str.tostring(snapSerial) + " regressed behind registry serial #" + str.tostring(r.currentTJL.serial)
+                        if not na(ledger)
+                            ledger.recordFailure("Contradictory snapshot", snapSym, snapTF, snapClose, deliveredAt, r.registryReason)
+                    else if snapSerial > r.currentTJL.serial
+                        r.updateTJLActivations(snapSym, snapTF, snapSerial, snapMade, na, snapUp, snapHighUpper, snapHighLower, snapLowUpper, snapLowLower, deliveredAt)
+                        r.currentTJL := TJLRegistryEntry.new(symbol=snapSym, tf=snapTF, serial=snapSerial, up=snapUp, highOrigin=snapHighOrigin, lowOrigin=snapLowOrigin, highUpper=snapHighUpper, highLower=snapHighLower, lowUpper=snapLowUpper, lowLower=snapLowLower, made=snapMade, ready=snapReady, ended=na, firstObserved=deliveredAt, lastObserved=deliveredAt, p3=snapP3, p3price=snapP3price, endReason=0, fromSnapshot=true, eventObserved=false)
+                        r.registryStatus := "Verified consistent"
+                        r.registryReason := "Consistent: replaced with newer source snapshot set #" + str.tostring(snapSerial)
+                    else
+                        r.currentTJL.lastObserved := deliveredAt
+                        if na(r.currentTJL.p3) and not na(snapP3)
+                            r.currentTJL.p3 := snapP3
+                            r.currentTJL.p3price := snapP3price
+                        bool isTradeFinding = snapTF == "1D" or snapTF == "240" or snapTF == "60"
+                        if isTradeFinding
+                            r.updateTJLActivations(snapSym, snapTF, snapSerial, snapMade, na, snapUp, snapHighUpper, snapHighLower, snapLowUpper, snapLowLower, deliveredAt)
+                        r.registryStatus := "Verified consistent"
+                        r.registryReason := "Consistent: matching set #" + str.tostring(snapSerial) + " confirmed by endpoint snapshot"
+                    if hasTrendContradiction
+                        if not na(ledger)
+                            ledger.recordFailure("Trend contradiction", snapSym, snapTF, snapClose, deliveredAt, r.trendDiagnostic)
+                    if not na(ledger) and tf != "1" and r.registryStatus == "Verified consistent" and not hasTrendContradiction
+                        bool tValid = ver == "TJL2" and r.trendAvailable
+                        int tState = tValid ? snapTrend : 0
+                        int tSince = tValid ? snapSince : na
+                        ledger.ingestSnapshot(snapSym, snapTF, ver, "SET", snapClose, snapSerial, snapMade, snapReady, snapUp, snapHighOrigin, snapHighUpper, snapHighLower, snapLowOrigin, snapLowUpper, snapLowLower, snapP3, snapP3price, tValid, tState, tSince, deliveredAt)
+    true
+method prepareDeliveryCycle(MTFReceiver r) =>
+    if na(r.stagedConfirmations)
+        r.stagedConfirmations := array.new<TJLConfirmationEvent>()
+    else
+        array.clear(r.stagedConfirmations)
+    if na(r.matches)
+        r.matches := array.new<TJLConfirmationMatch>()
+    if na(r.matchKeys)
+        r.matchKeys := array.new_string()
+    bool hasPair = not na(r.act1) and not na(r.act2)
+    r.preActSymbol := hasPair ? r.act1.symbol : ""
+    r.preActTF := hasPair ? r.act1.tf : ""
+    r.preActSerial := hasPair ? r.act1.serial : na
+    r.preActMade := hasPair ? r.act1.made : na
+    r.preActUp := hasPair ? r.act1.up : false
+    r.preAct1Level := hasPair ? r.act1.level : ""
+    r.preAct2Level := hasPair ? r.act2.level : ""
+    r.preActKnownAt := r.actKnownAt
+    r.preActCancelled := hasPair ? (r.act1.cancelled or r.act2.cancelled) : true
+    r.preTrendAvailable := r.trendAvailable
+    r.preTrendState := r.trendState
+    r.preTrendObservedAt := r.trendObservedAt
+    r.preLifecycleConsistent := r.actLifecycleStatus == "Consistent"
+    r.preRegistryConsistent := r.registryStatus == "Verified consistent"
+    bool regMatch = not na(r.currentTJL) and hasPair and r.currentTJL.symbol == r.act1.symbol and r.currentTJL.tf == r.act1.tf and r.currentTJL.serial == r.act1.serial and r.currentTJL.made == r.act1.made and r.currentTJL.up == r.act1.up and na(r.currentTJL.ended)
+    bool pairMatch = hasPair and r.act1.symbol == r.act2.symbol and r.act1.tf == r.act2.tf and r.act1.serial == r.act2.serial and r.act1.made == r.act2.made and r.act1.up == r.act2.up and r.act1.level == "TJL1" and r.act2.level == "TJL2"
+    r.preCurrentTJLMatch := regMatch and pairMatch
+    true
+method evaluateDiagnosticTouches(MTFReceiver r, string tf, float candleHigh, float candleLow, int candleOpen, int candleClose, int observedAt, CentralEvidenceLedger ledger) =>
+    bool isM1Chart = timeframe.isminutes and timeframe.multiplier == 1
+    bool isTradeTF = tf == "1D" or tf == "240" or tf == "60"
+    if not isM1Chart or not isTradeTF
+        r.touchGateAllowed := false
+        r.touchGateReason := not isM1Chart ? "Operating chart is not M1" : "Timeframe not eligible for trade finding"
+        r.availLevelKnown := false
+        r.availLevelKnownAt := na
+        r.availTrendKnown := false
+        r.availTrendObservedAt := na
+        r.availTrendMatches := false
+    else
+        bool validCandleGeom = not na(candleHigh) and not na(candleLow) and candleLow <= candleHigh
+        bool validCandleTimes = not na(candleOpen) and not na(candleClose) and candleOpen > 0 and candleClose > candleOpen and not na(observedAt) and observedAt >= candleClose
+        if not validCandleGeom or not validCandleTimes
+            r.touchGateAllowed := false
+            r.touchGateReason := not validCandleGeom ? "Invalid candle geometry" : "Invalid candle timestamps"
+            r.availLevelKnown := false
+            r.availLevelKnownAt := na
+            r.availTrendKnown := false
+            r.availTrendObservedAt := na
+            r.availTrendMatches := false
+        else
+            bool hasPair = not na(r.act1) and not na(r.act2)
+            if not hasPair
+                r.touchGateAllowed := false
+                r.touchGateReason := "No activation pair"
+                r.availLevelKnown := false
+                r.availLevelKnownAt := na
+                r.availTrendKnown := false
+                r.availTrendObservedAt := na
+                r.availTrendMatches := false
+            else
+                bool expSourceMatch = r.act1.symbol == syminfo.tickerid and r.act1.tf == tf and r.act2.symbol == syminfo.tickerid and r.act2.tf == tf and not na(r.currentTJL) and r.currentTJL.symbol == syminfo.tickerid and r.currentTJL.tf == tf
+                bool levelsValid = r.act1.level == "TJL1" and r.act2.level == "TJL2"
+                bool sharedTradeSide = r.act1.up == r.act2.up and not na(r.currentTJL) and r.currentTJL.up == r.act1.up
+                bool regAct1Match = not na(r.currentTJL) and r.currentTJL.symbol == r.act1.symbol and r.currentTJL.tf == r.act1.tf and r.currentTJL.serial == r.act1.serial and r.currentTJL.made == r.act1.made and r.currentTJL.up == r.act1.up
+                bool regAct2Match = not na(r.currentTJL) and r.currentTJL.symbol == r.act2.symbol and r.currentTJL.tf == r.act2.tf and r.currentTJL.serial == r.act2.serial and r.currentTJL.made == r.act2.made and r.currentTJL.up == r.act2.up
+                if not expSourceMatch
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Activation or registry symbol/tf mismatch against receiver source: " + r.act1.symbol + "/" + r.act1.tf + " vs " + syminfo.tickerid + "/" + tf
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if not levelsValid
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Invalid activation level designations: " + r.act1.level + " / " + r.act2.level
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if not sharedTradeSide
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Mismatched trade side across registry and activation pair"
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if not regAct1Match or not regAct2Match
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Identity mismatch between registry and activation records for set #" + str.tostring(r.currentTJL.serial)
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if not na(r.currentTJL.ended)
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Registry set ended"
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if r.actLifecycleStatus != "Consistent"
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Activation lifecycle unresolved: " + r.actDiagnostic
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if r.registryStatus != "Verified consistent"
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Registry inconsistent or malformed: " + r.registryReason
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else if r.act1.cancelled or r.act2.cancelled
+                    r.touchGateAllowed := false
+                    r.touchGateReason := "Activation set cancelled"
+                    r.availLevelKnown := false
+                    r.availLevelKnownAt := na
+                    r.availTrendKnown := false
+                    r.availTrendObservedAt := na
+                    r.availTrendMatches := false
+                else
+                    bool sameRecordAsPre = not na(r.preActSerial) and r.preActSerial == r.act1.serial and not na(r.preActMade) and r.preActMade == r.act1.made and r.preActSymbol == r.act1.symbol and r.preActTF == r.act1.tf and r.preActUp == r.act1.up and r.preAct1Level == r.act1.level and r.preAct2Level == r.act2.level and r.preActSerial == r.act2.serial and r.preActMade == r.act2.made and r.preActSymbol == r.act2.symbol and r.preActTF == r.act2.tf and r.preActUp == r.act2.up
+                    bool preAvailAtOpen = sameRecordAsPre and not r.preActCancelled and not na(r.preActKnownAt) and r.preActKnownAt <= candleOpen and r.act1.made <= candleOpen
+                    r.availLevelKnown := preAvailAtOpen
+                    r.availLevelKnownAt := r.preActKnownAt
+
+                    bool preTrendAvailAtOpen = r.preTrendAvailable and not na(r.preTrendObservedAt) and r.preTrendObservedAt <= candleOpen
+                    int expTrend = r.act1.up ? 1 : 2
+                    bool preTrendMatches = preTrendAvailAtOpen and r.preTrendState == expTrend
+                    r.availTrendKnown := preTrendAvailAtOpen
+                    r.availTrendObservedAt := r.preTrendObservedAt
+                    r.availTrendMatches := preTrendMatches
+
+                    bool postTrendMatches = r.trendAvailable and r.trendState == expTrend
+
+                    if not r.preRegistryConsistent
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Pre-delivery registry was unverified or in conflict at candle open"
+                    else if not r.preLifecycleConsistent
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Pre-delivery activation lifecycle was unresolved at candle open"
+                    else if not r.preCurrentTJLMatch
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Pre-delivery registry set was missing, ended, or mismatched at candle open"
+                    else if not sameRecordAsPre
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Newly installed set #" + str.tostring(r.act1.serial) + " was not known at candle open"
+                    else if not preAvailAtOpen
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Level not known at candle open (knownAt " + f_time(r.preActKnownAt) + " > open " + f_time(candleOpen) + ")"
+                    else if not r.preTrendAvailable
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend unavailable at candle open"
+                    else if not preTrendAvailAtOpen
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend was not known at candle open (observedAt " + f_time(r.preTrendObservedAt) + " > open " + f_time(candleOpen) + ")"
+                    else if r.preTrendState == 0
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend unconfirmed at candle open (state 0)"
+                    else if not preTrendMatches
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend opposite to trade side (trend " + str.tostring(r.preTrendState) + " vs expected " + str.tostring(expTrend) + ")"
+                    else if not r.trendAvailable
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend invalidated during current delivery: " + r.trendDiagnostic
+                    else if r.trendState == 0
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend unconfirmed post-delivery (state 0)"
+                    else if not postTrendMatches
+                        r.touchGateAllowed := false
+                        r.touchGateReason := "Source trend changed to opposite post-delivery"
+                    else
+                        r.touchGateAllowed := true
+                        r.touchGateReason := "Allowed: confirmed matching trend and levels known by M1 open"
+
+                    bool tjl1Eligible = r.act1.pending or r.touchGateAllowed
+                    bool tjl2Eligible = r.act2.pending or r.touchGateAllowed
+
+                    r.act1.touch(candleHigh, candleLow, candleOpen, candleClose, observedAt, true, tjl1Eligible, true, ledger)
+                    r.act2.touch(candleHigh, candleLow, candleOpen, candleClose, observedAt, true, tjl2Eligible, true, ledger)
+    true
+method stageConfirmationEvent(MTFReceiver r, CalcEvent e) =>
+    if na(r.stagedConfirmations)
+        r.stagedConfirmations := array.new<TJLConfirmationEvent>()
+    array.push(r.stagedConfirmations, TJLConfirmationEvent.new(symbol=e.symbol, tf=e.tf, id=e.id, kind=e.kind, serial=e.serial, sourceClose=e.sourceClose, up=e.up))
+    true
+method matchActivationLevel(MTFReceiver r, TJLActivation act, TJLConfirmationEvent conf, int observedAt) =>
+    bool result = false
+    if not na(conf) and not na(act) and act.pending and not act.cancelled
+        bool hasReg = not na(r.currentTJL)
+        bool regIntact = hasReg and na(r.currentTJL.ended) and r.currentTJL.symbol == act.symbol and r.currentTJL.tf == act.tf and r.currentTJL.serial == act.serial and r.currentTJL.made == act.made and r.currentTJL.up == act.up
+        bool lifecycleOk = r.actLifecycleStatus == "Consistent" and r.registryStatus == "Verified consistent"
+        bool symValid = conf.symbol == syminfo.tickerid and act.symbol == syminfo.tickerid and conf.symbol == act.symbol
+        bool idValid = conf.id != ""
+        string expConfTF = act.tf == "1D" ? "60" : act.tf == "240" ? "5" : act.tf == "60" ? "1" : ""
+        bool tfValid = expConfTF != "" and conf.tf == expConfTF and (act.tf == "1D" or act.tf == "240" or act.tf == "60")
+        bool levelValid = act.level == "TJL1" or act.level == "TJL2"
+        if hasReg and regIntact and lifecycleOk and symValid and idValid and tfValid and levelValid
+            bool timesNonMissing = not na(act.tapOpen) and not na(act.tapClose) and not na(act.tapObserved) and not na(conf.sourceClose) and not na(observedAt)
+            if timesNonMissing
+                bool timesPositive = act.tapOpen > 0 and act.tapClose > 0 and act.tapObserved > 0 and conf.sourceClose > 0 and observedAt > 0
+                bool timesValid = timesPositive and (act.tapOpen < act.tapClose) and (act.tapClose <= conf.sourceClose) and (conf.sourceClose <= observedAt) and (act.tapClose <= act.tapObserved) and (act.tapObserved <= observedAt)
+                bool validKind = conf.kind == 30 or conf.kind == 44
+                bool validDir = conf.up == act.up
+                if timesValid and validKind and validDir
+                    if na(r.matches)
+                        r.matches := array.new<TJLConfirmationMatch>()
+                    if na(r.matchKeys)
+                        r.matchKeys := array.new_string()
+                    string dedupKey = act.symbol + "|" + act.tf + "|" + str.tostring(act.serial) + "|" + str.tostring(act.made) + "|" + act.level + "::" + conf.id
+                    if not array.includes(r.matchKeys, dedupKey)
+                        if array.size(r.matchKeys) >= 100
+                            r.matchSaturated := true
+                        else
+                            string cType = conf.kind == 30 ? "CHOCH" : "ISS"
+                            TJLConfirmationMatch m = TJLConfirmationMatch.new(actSymbol=act.symbol, actTF=act.tf, actSerial=act.serial, actMade=act.made, actLevel=act.level, actUp=act.up, tapOpen=act.tapOpen, tapClose=act.tapClose, tapObserved=act.tapObserved, confType=cType, confTF=conf.tf, confId=conf.id, confClose=conf.sourceClose, confObserved=observedAt, status="Provisional (no entry selection or level usage)")
+                            array.push(r.matches, m)
+                            array.push(r.matchKeys, dedupKey)
+                            r.totalMatches += 1
+                            if array.size(r.matches) > 30
+                                array.shift(r.matches)
+                                r.matchOmitted += 1
+                            result := true
+    result
+method matchConfirmations(MTFReceiver r, array<TJLConfirmationEvent> staged, int observedAt) =>
+    if not na(staged) and array.size(staged) > 0
+        for i = 0 to array.size(staged) - 1
+            TJLConfirmationEvent conf = array.get(staged, i)
+            r.matchActivationLevel(r.act1, conf, observedAt)
+            r.matchActivationLevel(r.act2, conf, observedAt)
+    true
+method consume(MTFReceiver r, string tf, int tc, int op, int ix, int seq, int n, string wire, string report, string snap, int dop, int dtc, int dix, array<string> history, CentralEvidenceLedger ledger) =>
     // Refresh status even if a detector has halted or has not found its start.
     if not na(report)
         r.report := report
@@ -1034,20 +2222,404 @@ method consume(MTFReceiver r, string tf, int tc, int op, int ix, int seq, int n,
                     string omitted = array.shift(history)
                 r.accepted += 1
                 ids += (i == 0 ? "" : "\n") + f_wi(e.sequence) + ": " + e.id
+                if not na(ledger)
+                    if e.kind == 50
+                        ledger.ingestCreation(e, time_close)
+                    else if e.kind == 51
+                        ledger.ingestSetEnd(e, time_close)
+                    else if e.kind == 30 or e.kind == 44
+                        ledger.ingestConfirmation(e, time_close)
+                if e.kind == 50 or e.kind == 51 or e.kind == 52
+                    r.processTJL(e, time_close)
+                if e.kind == 30 or e.kind == 44
+                    r.stageConfirmationEvent(e)
             r.retainedIDs := ids
             r.retainedClose := tc
             r.retainedSize := n
+        r.reconcileSnapshot(tf, tc, snap, time_close, ledger)
         r.sourceClose := tc
         r.sourceIndex := ix
         r.sequence := seq
         r.deliveredClose := time_close
+    // Envelope progress witness refresh (evaluated on every call, including repeated packets)
+    bool isM1 = tf == "1"
+    int observedAt = time_close
+    bool healthOk = not na(r.sourceClose) and not na(r.sourceIndex) and not str.startswith(r.report, "HALTED") and str.startswith(r.report, "Started") and r.missingEvents == 0 and r.missingBars == 0 and r.registryStatus == "Verified consistent"
+    if not healthOk
+        r.progressValid := false
+        r.progressReason := na(r.sourceClose) or na(r.sourceIndex) ? "Source uninitialized: no completed packet accepted" : str.startswith(r.report, "HALTED") ? "Source detector halted: " + r.report : not str.startswith(r.report, "Started") ? "Source detector not started: " + r.report : r.missingEvents > 0 or r.missingBars > 0 ? "Source stream has missing events (" + str.tostring(r.missingEvents) + ") or bars (" + str.tostring(r.missingBars) + ")" : "Registry unverified: " + r.registryStatus
+    else if isM1
+        r.devOpen := na
+        r.devClose := na
+        r.devIndex := na
+        r.devObserved := observedAt
+        bool validM1Times = time > 0 and time_close > time and r.sourceClose > 0
+        bool m1CloseMatch = r.sourceClose == time_close
+        bool m1IndexMatch = r.sourceIndex == bar_index
+        bool m1NotFuture = r.sourceClose <= observedAt
+        if not validM1Times
+            r.progressValid := false
+            r.progressReason := "Native M1 invalid non-positive timestamps"
+        else if not m1NotFuture or r.sourceClose > time_close
+            r.progressValid := false
+            r.progressReason := "Native M1 future packet: accepted close " + f_time(r.sourceClose) + " > time_close " + f_time(time_close)
+        else if r.sourceClose < time_close
+            r.progressValid := false
+            r.progressReason := "Native M1 stale packet: accepted close " + f_time(r.sourceClose) + " < time_close " + f_time(time_close)
+        else if not m1IndexMatch
+            r.progressValid := false
+            r.progressReason := "Native M1 index mismatch: accepted index #" + str.tostring(r.sourceIndex) + " != bar_index #" + str.tostring(bar_index)
+        else
+            r.progressValid := true
+            r.progressReason := "Native chart M1 execution continuous at bar #" + str.tostring(bar_index)
+    else
+        bool hasDev = not na(dop) and not na(dtc) and not na(dix)
+        bool validIndex = hasDev and dix == r.sourceIndex + 1
+        bool validTimes = hasDev and dop > 0 and dtc > 0 and r.sourceClose > 0
+        bool notFutureDev = hasDev and dop <= observedAt
+        bool notFutureComp = r.sourceClose <= observedAt
+        r.devOpen := dop
+        r.devClose := dtc
+        r.devIndex := dix
+        r.devObserved := observedAt
+        if not hasDev
+            r.progressValid := false
+            r.progressReason := "Missing developing bar metadata"
+        else if not validIndex
+            r.progressValid := false
+            r.progressReason := "Developing index mismatch: expected " + str.tostring(r.sourceIndex + 1) + " but received " + str.tostring(dix)
+        else if not validTimes
+            r.progressValid := false
+            r.progressReason := "Non-positive timestamps"
+        else if r.sourceClose > dop
+            r.progressValid := false
+            r.progressReason := "Contradictory order: completed close " + f_time(r.sourceClose) + " > developing open " + f_time(dop)
+        else if dop >= dtc
+            r.progressValid := false
+            r.progressReason := "Invalid developing bar duration: open " + f_time(dop) + " >= close " + f_time(dtc)
+        else if not notFutureDev
+            r.progressValid := false
+            r.progressReason := "Developing open " + f_time(dop) + " is in future relative to observation " + f_time(observedAt)
+        else if not notFutureComp
+            r.progressValid := false
+            r.progressReason := "Completed close " + f_time(r.sourceClose) + " is in future relative to observation " + f_time(observedAt)
+        else
+            r.progressValid := true
+            r.progressReason := "Coherent immediate successor"
     true
+
+f_source_candidate_safety(MTFReceiver r, string tf, int targetTime, int observedAt) =>
+    bool safe = false
+    string reason = ""
+    if na(observedAt) or observedAt <= 0
+        safe := false
+        reason := tf + ": missing or invalid observation time"
+    else if na(targetTime) or targetTime <= 0
+        safe := false
+        reason := tf + ": invalid non-positive target time"
+    else if targetTime > observedAt
+        safe := false
+        reason := tf + ": target " + f_time(targetTime) + " exceeds observation time " + f_time(observedAt)
+    else if na(r.devObserved) or r.devObserved <= 0
+        safe := false
+        reason := tf + ": receiver has no valid witness observation time"
+    else if targetTime > r.devObserved
+        safe := false
+        reason := tf + ": target " + f_time(targetTime) + " exceeds receiver observation time " + f_time(r.devObserved)
+    else if na(r.sourceClose) or na(r.sourceIndex)
+        safe := false
+        reason := tf + ": uninitialized"
+    else if not r.progressValid
+        safe := false
+        reason := tf + ": progress invalid (" + r.progressReason + ")"
+    else if r.missingEvents > 0 or r.missingBars > 0
+        safe := false
+        reason := tf + ": data gaps"
+    else if r.sourceClose >= targetTime
+        safe := true
+        reason := tf + ": completed coverage through T (close " + f_time(r.sourceClose) + " >= T " + f_time(targetTime) + ")"
+    else if tf == "1"
+        safe := false
+        reason := "M1: target T " + f_time(targetTime) + " exceeds completed close " + f_time(r.sourceClose)
+    else if na(r.devClose)
+        safe := false
+        reason := tf + ": missing developing close"
+    else if r.devClose > targetTime
+        safe := true
+        reason := tf + ": immediate successor closes after T (devClose " + f_time(r.devClose) + " > T " + f_time(targetTime) + ")"
+    else if r.devClose == targetTime
+        safe := false
+        reason := tf + ": target T equals developing close (" + f_time(targetTime) + "); waiting for completed packet"
+    else
+        safe := false
+        reason := tf + ": developing close " + f_time(r.devClose) + " precedes T " + f_time(targetTime) + "; intervening bars pending"
+    [safe, reason]
+
+f_mtf_candidate_safety(MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int targetTime, int observedAt) =>
+    [dSafe, dReason] = f_source_candidate_safety(rd, "1D", targetTime, observedAt)
+    [safe4, reason4] = f_source_candidate_safety(r4, "240", targetTime, observedAt)
+    [safe1, reason1] = f_source_candidate_safety(r1, "60", targetTime, observedAt)
+    [safe5, reason5] = f_source_candidate_safety(r5, "5", targetTime, observedAt)
+    [safeM, reasonM] = f_source_candidate_safety(rm, "1", targetTime, observedAt)
+    bool allSafe = dSafe and safe4 and safe1 and safe5 and safeM
+    string summary = allSafe ? "ALL 5 ENGINES SAFE through T " + f_time(targetTime) : "BLOCKED at T " + f_time(targetTime) + ": " + (not dSafe ? dReason : not safe4 ? reason4 : not safe1 ? reason1 : not safe5 ? reason5 : reasonM)
+    [allSafe, summary]
 f_mtf_row(table t, int row, string tf, MTFReceiver r) =>
     array<string> statusLines = str.split(r.report, "\n")
     string info = array.get(statusLines, 0) + "\nSource CLOSE " + f_time(r.sourceClose) + " | Delivered M1 CLOSE " + f_time(r.deliveredClose)
     info += "\nSeq/accepted " + f_wi(r.sequence) + "/" + f_wi(r.accepted) + " | Initial unseen " + f_wi(r.initialUnseen) + " | Missing events/bars " + f_wi(r.missingEvents) + "/" + f_wi(r.missingBars)
+    string devInfo = tf == "1" ? "Dev: N/A (native M1)" : "Dev: #" + (na(r.devIndex) ? "~" : str.tostring(r.devIndex)) + " OP " + f_time(r.devOpen) + " | CL " + f_time(r.devClose)
+    string progInfo = "Progress: " + (r.progressValid ? "VALID" : "INVALID (" + r.progressReason + ")")
+    info += "\n" + devInfo + "\n" + progInfo
     table.cell(t, 0, row, tf, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
     table.cell(t, 1, row, info, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+
+f_rcv_has_gaps(MTFReceiver r) =>
+    not r.progressValid or r.missingEvents > 0 or r.missingBars > 0
+
+f_candidate_eval_progress_safety(CentralCandidateRecord cand, MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int observedAt) =>
+    cand.evalObserved := observedAt
+    [allSafe, summary] = f_mtf_candidate_safety(rd, r4, r1, r5, rm, cand.confClose, observedAt)
+    if cand.isCancelled
+        cand.status := "Source-cancelled/ineligible"
+        cand.blockingReason := cand.cancelReason
+    else if cand.hasConflict
+        cand.status := "Evidence blocked/incomplete"
+        cand.blockingReason := cand.conflictReason
+    else if allSafe
+        cand.status := "Progress-safe diagnostic candidate"
+        cand.blockingReason := ""
+    else
+        bool gaps = f_rcv_has_gaps(rd) or f_rcv_has_gaps(r4) or f_rcv_has_gaps(r1) or f_rcv_has_gaps(r5) or f_rcv_has_gaps(rm)
+        cand.status := gaps ? "Evidence blocked/incomplete" : "Waiting for progress proof"
+        cand.blockingReason := summary
+    true
+
+method checkCancellationIncremental(CentralEvidenceLedger l, string symbol, string tf, int serial, int made, int confClose, int startSetEnd, int endSetEnd, int startCreation, int endCreation) =>
+    bool cancelled = false
+    string reason = ""
+    if endSetEnd > startSetEnd
+        for i = startSetEnd to endSetEnd - 1
+            TJLSetEndRecord e = array.get(l.setEnds, i)
+            if e.symbol == symbol and e.tf == tf and e.serial == serial and e.made == made
+                if not na(e.ended) and e.ended <= confClose
+                    cancelled := true
+                    reason := "Source set-end at " + f_time(e.ended) + " (reason " + str.tostring(e.endReason) + ")"
+                    break
+    if not cancelled and endCreation > startCreation
+        for i = startCreation to endCreation - 1
+            TJLCreationRecord c = array.get(l.creations, i)
+            if c.symbol == symbol and c.tf == tf and c.serial > serial and c.made > made
+                if not na(c.made) and c.made <= confClose
+                    cancelled := true
+                    reason := "Replaced by set #" + str.tostring(c.serial) + " at " + f_time(c.made)
+                    break
+    [cancelled, reason]
+
+method checkCancellation(CentralEvidenceLedger l, string symbol, string tf, int serial, int made, int confClose) =>
+    l.checkCancellationIncremental(symbol, tf, serial, made, confClose, 0, array.size(l.setEnds), 0, array.size(l.creations))
+
+method evaluateCandidateProgress(CentralEvidenceLedger l, CentralCandidateRecord cand, MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int observedAt) =>
+    cand.evalObserved := observedAt
+    if l.intakeBroken
+        cand.status := "Evidence blocked/incomplete"
+        cand.blockingReason := "Ledger broken: " + l.brokenReason
+    else
+        [isCancelled, cancelReason] = l.checkCancellation(cand.actSymbol, cand.actTF, cand.actSerial, cand.actMade, cand.confClose)
+        if isCancelled
+            cand.isCancelled := true
+            cand.cancelReason := cancelReason
+            cand.status := "Source-cancelled/ineligible"
+            cand.blockingReason := cancelReason
+        else
+            f_candidate_eval_progress_safety(cand, rd, r4, r1, r5, rm, observedAt)
+    true
+
+method tryMatchTapAndConfirmation(CentralEvidenceLedger l, FirstTapRecord tap, ConfirmationRecord conf, MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int observedAt) =>
+    bool nonNa = not na(tap) and not na(conf)
+    if nonNa
+        expConfTF = tap.tf == "1D" ? "60" : tap.tf == "240" ? "5" : tap.tf == "60" ? "1" : ""
+        tfMatches = expConfTF != "" and conf.tf == expConfTF and (tap.tf == "1D" or tap.tf == "240" or tap.tf == "60")
+        symMatches = tap.symbol != "" and conf.symbol == tap.symbol and conf.symbol == syminfo.tickerid
+        dirMatches = conf.up == tap.up
+        kindMatches = conf.kind == 30 or conf.kind == 44
+        serialMadeValid = tap.serial > 0 and not na(tap.made) and tap.made > 0
+        levelValid = tap.level == "TJL1" or tap.level == "TJL2"
+        idValid = conf.eventId != ""
+        timesNonMissing = not na(tap.tapOpen) and not na(tap.tapClose) and not na(tap.tapObserved) and not na(conf.sourceClose) and not na(conf.observedAt) and not na(observedAt)
+        if tfMatches and symMatches and dirMatches and kindMatches and serialMadeValid and levelValid and idValid and timesNonMissing
+            timesPositive = tap.tapOpen > 0 and tap.tapClose > 0 and tap.tapObserved > 0 and conf.sourceClose > 0 and conf.observedAt > 0 and observedAt > 0
+            orderValid = timesPositive and (tap.tapOpen < tap.tapClose) and (tap.tapClose <= conf.sourceClose) and (tap.tapClose <= tap.tapObserved) and (tap.tapObserved <= observedAt) and (conf.sourceClose <= conf.observedAt) and (conf.observedAt <= observedAt)
+            if orderValid
+                string baseKey = "CAND:" + tap.symbol + ":" + tap.tf + ":" + str.tostring(tap.serial) + ":" + str.tostring(tap.made) + ":" + tap.level + ":" + str.tostring(tap.tapOpen)
+                string fullKey = baseKey + ":" + conf.eventId
+                if array.includes(l.dedupKeys, fullKey)
+                    true
+                else if array.size(l.dedupKeys) >= LEDGER_CAP_DEDUP_KEYS
+                    l.recordFailure("Capacity", conf.symbol, conf.tf, conf.sourceClose, observedAt, "deduplication keys reached cap " + str.tostring(LEDGER_CAP_DEDUP_KEYS))
+                else
+                    bool merged = false
+                    CentralCandidateRecord existingCand = na
+                    if array.size(l.candidates) > 0
+                        for i = 0 to array.size(l.candidates) - 1
+                            CentralCandidateRecord cRec = array.get(l.candidates, i)
+                            if cRec.actSymbol == tap.symbol and cRec.actTF == tap.tf and cRec.actSerial == tap.serial and cRec.actMade == tap.made and cRec.actLevel == tap.level and cRec.tapOpen == tap.tapOpen and cRec.confClose == conf.sourceClose
+                                existingCand := cRec
+                                break
+                    if not na(existingCand)
+                        array.push(l.dedupKeys, fullKey)
+                        if existingCand.confKind != conf.kind and existingCand.conf2Id == ""
+                            existingCand.conf2Id := conf.eventId
+                            existingCand.conf2Kind := conf.kind
+                            existingCand.conf2Observed := conf.observedAt
+                            merged := true
+                        else
+                            existingCand.hasConflict := true
+                            existingCand.conflictReason := "Conflicting/excess confirmation evidence at CLOSE " + f_time(conf.sourceClose)
+                            existingCand.status := existingCand.isCancelled ? "Source-cancelled/ineligible" : "Evidence blocked/incomplete"
+                            existingCand.blockingReason := existingCand.isCancelled ? existingCand.cancelReason : existingCand.conflictReason
+                            merged := true
+                    if not merged and not l.intakeBroken
+                        if array.size(l.candidates) >= LEDGER_CAP_CANDIDATES
+                            l.recordFailure("Capacity", conf.symbol, conf.tf, conf.sourceClose, observedAt, "candidates reached cap " + str.tostring(LEDGER_CAP_CANDIDATES))
+                        else
+                            array.push(l.dedupKeys, fullKey)
+                            CentralCandidateRecord cand = CentralCandidateRecord.new(
+                                actSymbol=tap.symbol, actTF=tap.tf, actSerial=tap.serial, actMade=tap.made,
+                                actLevel=tap.level, actUp=tap.up, tapOpen=tap.tapOpen, tapClose=tap.tapClose,
+                                tapObserved=tap.tapObserved, confId=conf.eventId, confKind=conf.kind,
+                                confTF=conf.tf, confClose=conf.sourceClose, confObserved=conf.observedAt,
+                                conf2Id="", conf2Kind=0, conf2Observed=na, evalObserved=observedAt, status="", blockingReason="")
+                            l.evaluateCandidateProgress(cand, rd, r4, r1, r5, rm, observedAt)
+                            array.push(l.candidates, cand)
+    true
+
+method matchRange(CentralEvidenceLedger l, int tStart, int tEnd, int cStart, int cEnd, MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int observedAt) =>
+    if tEnd > tStart and cEnd > cStart
+        for t = tStart to tEnd - 1
+            FirstTapRecord tapRec = array.get(l.firstTaps, t)
+            for c = cStart to cEnd - 1
+                ConfirmationRecord confRec = array.get(l.confirmations, c)
+                l.tryMatchTapAndConfirmation(tapRec, confRec, rd, r4, r1, r5, rm, observedAt)
+                if l.intakeBroken
+                    break
+            if l.intakeBroken
+                break
+    true
+
+method evaluateCandidates(CentralEvidenceLedger l, MTFReceiver rd, MTFReceiver r4, MTFReceiver r1, MTFReceiver r5, MTFReceiver rm, int observedAt) =>
+    if l.intakeBroken
+        if array.size(l.candidates) > 0
+            for i = 0 to array.size(l.candidates) - 1
+                CentralCandidateRecord cand = array.get(l.candidates, i)
+                if cand.status != "Source-cancelled/ineligible"
+                    cand.status := "Evidence blocked/incomplete"
+                    cand.blockingReason := "Ledger broken: " + l.brokenReason
+                    cand.evalObserved := observedAt
+        true
+    else
+        int tapCount = array.size(l.firstTaps)
+        int confCount = array.size(l.confirmations)
+        int endCount = array.size(l.setEnds)
+        int creatCount = array.size(l.creations)
+        l.matchRange(l.tapCursor, tapCount, 0, confCount, rd, r4, r1, r5, rm, observedAt)
+        if not l.intakeBroken
+            l.matchRange(0, math.min(tapCount, l.tapCursor), l.confCursor, confCount, rd, r4, r1, r5, rm, observedAt)
+        l.tapCursor := tapCount
+        l.confCursor := confCount
+        if l.intakeBroken
+            if array.size(l.candidates) > 0
+                for i = 0 to array.size(l.candidates) - 1
+                    CentralCandidateRecord cand = array.get(l.candidates, i)
+                    if cand.status != "Source-cancelled/ineligible"
+                        cand.status := "Evidence blocked/incomplete"
+                        cand.blockingReason := "Ledger broken: " + l.brokenReason
+                        cand.evalObserved := observedAt
+            true
+        else
+            bool newCancellations = endCount > l.setEndCursor or creatCount > l.creationCursor
+            int prevEnd = l.setEndCursor
+            int prevCreat = l.creationCursor
+            l.setEndCursor := endCount
+            l.creationCursor := creatCount
+            if newCancellations and array.size(l.candidates) > 0
+                for i = 0 to array.size(l.candidates) - 1
+                    CentralCandidateRecord cand = array.get(l.candidates, i)
+                    if cand.status != "Source-cancelled/ineligible"
+                        [isCancelled, cancelReason] = l.checkCancellationIncremental(cand.actSymbol, cand.actTF, cand.actSerial, cand.actMade, cand.confClose, prevEnd, endCount, prevCreat, creatCount)
+                        if isCancelled
+                            cand.isCancelled := true
+                            cand.cancelReason := cancelReason
+                            cand.status := "Source-cancelled/ineligible"
+                            cand.blockingReason := cancelReason
+                            cand.evalObserved := observedAt
+            if array.size(l.candidates) > 0
+                for i = 0 to array.size(l.candidates) - 1
+                    CentralCandidateRecord cand = array.get(l.candidates, i)
+                    if cand.status == "Waiting for progress proof" or cand.status == "Progress-safe diagnostic candidate"
+                        f_candidate_eval_progress_safety(cand, rd, r4, r1, r5, rm, observedAt)
+            true
+        true
+    true
+
+f_candidate_compare_approved(CentralCandidateRecord a, CentralCandidateRecord b) =>
+    int cmp = 0
+    if a.confClose != b.confClose
+        cmp := a.confClose < b.confClose ? -1 : 1
+    else
+        int aTFWeight = a.confTF == "1" ? 1 : a.confTF == "5" ? 2 : 3
+        int bTFWeight = b.confTF == "1" ? 1 : b.confTF == "5" ? 2 : 3
+        if aTFWeight != bTFWeight
+            cmp := aTFWeight < bTFWeight ? -1 : 1
+        else
+            int aLvlWeight = a.actLevel == "TJL2" ? 1 : 2
+            int bLvlWeight = b.actLevel == "TJL2" ? 1 : 2
+            if aLvlWeight != bLvlWeight
+                cmp := aLvlWeight < bLvlWeight ? -1 : 1
+            else
+                cmp := 0
+    cmp
+
+f_get_earliest_preview(CentralEvidenceLedger l) =>
+    CentralCandidateRecord best = na
+    bool hasTie = false
+    int safeCount = 0
+    int waitCount = 0
+    int cancelCount = 0
+    int blockCount = 0
+    if array.size(l.candidates) > 0
+        for i = 0 to array.size(l.candidates) - 1
+            CentralCandidateRecord cand = array.get(l.candidates, i)
+            if cand.status == "Progress-safe diagnostic candidate"
+                if not l.intakeBroken
+                    safeCount += 1
+                    if na(best)
+                        best := cand
+                    else
+                        int cmp = f_candidate_compare_approved(cand, best)
+                        if cmp < 0
+                            best := cand
+                            hasTie := false
+                        else if cmp == 0
+                            hasTie := true
+                            if cand.actSerial < best.actSerial
+                                best := cand
+                else
+                    blockCount += 1
+            else if cand.status == "Waiting for progress proof"
+                if not l.intakeBroken
+                    waitCount += 1
+                else
+                    blockCount += 1
+            else if cand.status == "Source-cancelled/ineligible"
+                cancelCount += 1
+            else
+                blockCount += 1
+    if l.intakeBroken
+        best := na
+        hasTie := false
+    [best, hasTie, safeCount, waitCount, cancelCount, blockCount]
+
 var MTFReceiver rd = MTFReceiver.new()
 var MTFReceiver r4 = MTFReceiver.new()
 var MTFReceiver r1 = MTFReceiver.new()
@@ -1055,22 +2627,38 @@ var MTFReceiver r5 = MTFReceiver.new()
 var MTFReceiver rm = MTFReceiver.new()
 var array<string> mtfHistory = array.new_string()
 var int firstM1Open = na
-var table mtfPanel = combined ? table.new(position.top_left, 2, 7, border_width=1) : na
+var int latestCommittedM1Close = na
+var CentralEvidenceLedger centralLedger = f_ledger_new()
+var table mtfPanel = combined ? table.new(position.top_left, 2, 8, border_width=1) : na
 var table mtfDetail = combined ? table.new(position.bottom_right, 1, 1, border_width=1) : na
 if combined
-    [dc, do_, di, ds, dn, dw, dr] = request.security(syminfo.tickerid, "1D", f_mtf_prior("1D", startD, upD), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
-    [c4, o4, i4, s4, n4, w4, t4] = request.security(syminfo.tickerid, "240", f_mtf_prior("240", start4, up4), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
-    [c1, o1, i1, s1, n1, w1, t1] = request.security(syminfo.tickerid, "60", f_mtf_prior("60", start1, up1), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
-    [c5, o5, i5, s5, n5, w5, t5] = request.security(syminfo.tickerid, "5", f_mtf_prior("5", start5, up5), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [dc, do_, di, ds, dn, dw, dr, dsnap, dopD, dtcD, dixD] = request.security(syminfo.tickerid, "1D", f_mtf_prior("1D", startD, upD), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c4, o4, i4, s4, n4, w4, t4, s4snap, dop4, dtc4, dix4] = request.security(syminfo.tickerid, "240", f_mtf_prior("240", start4, up4), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c1, o1, i1, s1, n1, w1, t1, s1snap, dop1, dtc1, dix1] = request.security(syminfo.tickerid, "60", f_mtf_prior("60", start1, up1), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
+    [c5, o5, i5, s5, n5, w5, t5, s5snap, dop5, dtc5, dix5] = request.security(syminfo.tickerid, "5", f_mtf_prior("5", start5, up5), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, calc_bars_count=sourceBars + 2)
     if barstate.isconfirmed
         if na(firstM1Open)
             firstM1Open := time
-        [mc, mo, mi, ms, mn, mw, mr] = f_mtf_build("1", startM, upM)
-        rd.consume("1D", dc, do_, di, ds, dn, dw, dr, mtfHistory)
-        r4.consume("240", c4, o4, i4, s4, n4, w4, t4, mtfHistory)
-        r1.consume("60", c1, o1, i1, s1, n1, w1, t1, mtfHistory)
-        r5.consume("5", c5, o5, i5, s5, n5, w5, t5, mtfHistory)
-        rm.consume("1", mc, mo, mi, ms, mn, mw, mr, mtfHistory)
+        latestCommittedM1Close := time_close
+        centralLedger.ingestM1OHLC(bar_index, time, time_close, open, high, low, close, time_close)
+        [mc, mo, mi, ms, mn, mw, mr, msnap] = f_mtf_build("1", startM, upM)
+        rd.prepareDeliveryCycle()
+        r4.prepareDeliveryCycle()
+        r1.prepareDeliveryCycle()
+        r5.prepareDeliveryCycle()
+        rm.prepareDeliveryCycle()
+        rd.consume("1D", dc, do_, di, ds, dn, dw, dr, dsnap, dopD, dtcD, dixD, mtfHistory, centralLedger)
+        r4.consume("240", c4, o4, i4, s4, n4, w4, t4, s4snap, dop4, dtc4, dix4, mtfHistory, centralLedger)
+        r1.consume("60", c1, o1, i1, s1, n1, w1, t1, s1snap, dop1, dtc1, dix1, mtfHistory, centralLedger)
+        r5.consume("5", c5, o5, i5, s5, n5, w5, t5, s5snap, dop5, dtc5, dix5, mtfHistory, centralLedger)
+        rm.consume("1", mc, mo, mi, ms, mn, mw, mr, msnap, na, na, na, mtfHistory, centralLedger)
+        rd.evaluateDiagnosticTouches("1D", high, low, time, time_close, time_close, centralLedger)
+        r4.evaluateDiagnosticTouches("240", high, low, time, time_close, time_close, centralLedger)
+        r1.evaluateDiagnosticTouches("60", high, low, time, time_close, time_close, centralLedger)
+        rd.matchConfirmations(r1.stagedConfirmations, time_close)
+        r4.matchConfirmations(r5.stagedConfirmations, time_close)
+        r1.matchConfirmations(rm.stagedConfirmations, time_close)
+        centralLedger.evaluateCandidates(rd, r4, r1, r5, rm, time_close)
     if barstate.islast
         table.cell(mtfPanel, 0, 0, "TopG v0.5.1-dev", bgcolor=color.white, text_color=color.black)
         table.cell(mtfPanel, 1, 0, "Combined REAL-event audit / UNVERIFIED", bgcolor=color.white, text_color=color.black)
@@ -1080,22 +2668,36 @@ if combined
         f_mtf_row(mtfPanel, 4, "M5", r5)
         f_mtf_row(mtfPanel, 5, "M1", rm)
         int accepted = rd.accepted + r4.accepted + r1.accepted + r5.accepted + rm.accepted
-        string coverage = "LIMITED: max 1200 chart bars in ALL modes; requested source cap " + f_wi(sourceBars) + " + 2. First committed M1 OPEN " + f_time(firstM1Open)
+        string coverage = "Chart window controlled by Calculated bars (verify externally, capacity " + f_wi(limit) + "); requested source cap sourceBars + 2 (" + f_wi(sourceBars + 2) + "). First committed M1 OPEN " + f_time(firstM1Open)
         coverage += "\nFull rows retained/omitted " + f_wi(array.size(mtfHistory)) + "/" + f_wi(accepted - array.size(mtfHistory)) + ". Initial unseen is NOT complete event coverage. Starts are never auto-corrected."
         coverage += "\nD-006 preserved; start dependence unresolved. HTF packets commit at the following M1 bar close, or later after session gaps. No global event-time ordering, taps, usage, entries or alerts. Native equivalence/live/replay/reload UNVERIFIED."
+        [allSafeRow, allSummaryRow] = f_mtf_candidate_safety(rd, r4, r1, r5, rm, latestCommittedM1Close, latestCommittedM1Close)
+        coverage += "\nAll-5 progress safety at committed M1 CLOSE " + f_time(latestCommittedM1Close) + ": " + (allSafeRow ? "SAFE" : "BLOCKED (" + allSummaryRow + ")") + " [progress evidence only—not finalization readiness]"
         table.cell(mtfPanel, 0, 6, "Coverage/timing", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
         table.cell(mtfPanel, 1, 6, coverage, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+        [bestCand, hasTie, safeCnt, waitCnt, cancelCnt, blockCnt] = f_get_earliest_preview(centralLedger)
+        string ledgerStatus = "Healthy"
+        if centralLedger.intakeBroken
+            string failSrc = centralLedger.failSymbol + " " + centralLedger.failTF + " @ " + (na(centralLedger.failSourceEndpoint) ? "~" : f_time(centralLedger.failSourceEndpoint))
+            string failObs = na(centralLedger.failObservedAt) ? "~" : f_time(centralLedger.failObservedAt)
+            ledgerStatus := "BLOCKED [" + centralLedger.failCategory + "]: " + centralLedger.failReason + " (" + failSrc + ", Obs " + failObs + ")"
+        string ledgerObs = "Obs: " + (na(centralLedger.firstObserved) ? "None" : f_time(centralLedger.firstObserved)) + " .. " + (na(centralLedger.lastObserved) ? "None" : f_time(centralLedger.lastObserved))
+        string ledgerCounts = "Records: TJL " + str.tostring(array.size(centralLedger.creations)) + "/" + str.tostring(LEDGER_CAP_CREATIONS) + " | Ends " + str.tostring(array.size(centralLedger.setEnds)) + "/" + str.tostring(LEDGER_CAP_SET_ENDS) + " | Confs " + str.tostring(array.size(centralLedger.confirmations)) + "/" + str.tostring(LEDGER_CAP_CONFIRMATIONS) + " | Snaps " + str.tostring(array.size(centralLedger.snapshots)) + "/" + str.tostring(LEDGER_CAP_SNAPSHOTS) + " | M1 " + str.tostring(array.size(centralLedger.m1Candles)) + "/" + str.tostring(LEDGER_CAP_M1_CANDLES) + " | Taps " + str.tostring(array.size(centralLedger.firstTaps)) + "/" + str.tostring(LEDGER_CAP_FIRST_TAPS) + " | Cands " + str.tostring(array.size(centralLedger.candidates)) + "/" + str.tostring(LEDGER_CAP_CANDIDATES) + " | Dedup " + str.tostring(array.size(centralLedger.dedupKeys)) + "/" + str.tostring(LEDGER_CAP_DEDUP_KEYS)
+        string ledgerUnseen = "Initial unseen: D1 " + f_wi(rd.initialUnseen) + ", H4 " + f_wi(r4.initialUnseen) + ", H1 " + f_wi(r1.initialUnseen) + ", M5 " + f_wi(r5.initialUnseen) + ", M1 " + f_wi(rm.initialUnseen)
+        string previewSummary = "None"
+        if not na(bestCand)
+            string c1 = bestCand.confKind == 30 ? "CHOCH" : "ISS"
+            string c2 = bestCand.conf2Id != "" ? (" + " + (bestCand.conf2Kind == 30 ? "CHOCH" : "ISS") + " [" + bestCand.conf2Id + "]") : ""
+            string side = bestCand.actUp ? "Bull" : "Bear"
+            previewSummary := bestCand.actTF + " #" + str.tostring(bestCand.actSerial) + " (" + bestCand.actLevel + " " + side + ") -> " + bestCand.confTF + " " + c1 + c2 + " @ " + f_time(bestCand.confClose) + " | " + bestCand.status
+        else if array.size(centralLedger.candidates) > 0
+            previewSummary := "None eligible (" + str.tostring(array.size(centralLedger.candidates)) + " total: " + str.tostring(safeCnt) + " safe, " + str.tostring(waitCnt) + " waiting, " + str.tostring(cancelCnt) + " cancelled, " + str.tostring(blockCnt) + " blocked)"
+        else
+            previewSummary := "None (waiting for tap + confirmation evidence)"
+        string ledgerSummary = "Status: " + ledgerStatus + " | " + ledgerObs + "\n" + ledgerCounts + "\n" + ledgerUnseen + "\nEarliest preview: " + previewSummary + " (" + (hasTie ? "presentation-only display tie-break; no strategy selection rule" : "ranked preview only—no selected entry or usage") + ")\nEvidence collection only—no finalization or signals"
+        table.cell(mtfPanel, 0, 7, "Central Ledger", bgcolor=color.white, text_color=color.black, text_size=size.tiny)
+        table.cell(mtfPanel, 1, 7, ledgerSummary, bgcolor=color.white, text_color=color.black, text_size=size.tiny)
         MTFReceiver chosen = inspectTF == "1D" ? rd : inspectTF == "240" ? r4 : inspectTF == "60" ? r1 : inspectTF == "5" ? r5 : rm
-        string detail = inspectTF + " | " + chosen.report + "\nDelivered M1 CLOSE " + f_time(chosen.deliveredClose)
-        detail += "\nRetained nonempty batch CLOSE/size " + f_time(chosen.retainedClose) + "/" + f_wi(chosen.retainedSize) + "\n" + chosen.retainedIDs
-        if showPayload
-            int at = array.size(mtfHistory) - 1 - inspectRecord
-            if at >= 0
-                array<string> names = str.split("symbol,tf,id,sequence,kind,serial,sourceOpen,sourceClose,identifiedAt,previousCloseAt,o1,o2,o3,o4,o5,p1,p2,p3,p4,p5,h1,l1,h2,l2,h3,l3,h4,l4,h5,l5,barHigh,barLow,previousClose,completion,broken,lower,upper,up,allInside,closeInside,reason,made,ready,ended", ",")
-                array<string> values = str.split(array.get(mtfHistory, at), ",")
-                detail += "\nInspected full record (delivery order, not global event-time order):"
-                for i = 0 to 43
-                    detail += "\n" + array.get(names, i) + ": " + (i < 3 ? f_wus(array.get(values, i)) : array.get(values, i))
-            else
-                detail += "\nInspected record is outside retained coverage"
+        string candBreakdown = "\nCandidates count: " + str.tostring(array.size(centralLedger.candidates)) + "/" + str.tostring(LEDGER_CAP_CANDIDATES) + " (" + str.tostring(safeCnt) + " safe, " + str.tostring(waitCnt) + " waiting, " + str.tostring(cancelCnt) + " cancelled, " + str.tostring(blockCnt) + " blocked)"
+        string detail = inspectTF + " | " + chosen.report + "\nRegistry: " + chosen.registryStatus + " (" + chosen.registryReason + ")" + "\nProgress: " + (chosen.progressValid ? "VALID" : "INVALID (" + chosen.progressReason + ")") + "\n\nCentral Evidence Ledger:\n" + ledgerSummary + candBreakdown
         table.cell(mtfDetail, 0, 0, detail, bgcolor=color.white, text_color=color.black, text_size=size.tiny, text_halign=text.align_left)
